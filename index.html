@@ -1,1132 +1,312 @@
-(() => {
-  "use strict";
-
-  const data = JSON.parse(document.getElementById("plot-data").textContent);
-  const graph = document.getElementById("graph");
-  const svg = document.getElementById("plot");
-  const select = document.getElementById("pairSelect");
-  const legend = document.getElementById("legend");
-  const tooltip = document.getElementById("tooltip");
-  const meta = document.getElementById("meta");
-  const modebar = document.getElementById("modebar");
-  const resetButton = document.getElementById("resetButton");
-  const ns = "http://www.w3.org/2000/svg";
-  const hiddenPops = new Set();
-  const selectedSamples = new Set();
-  const groupLabelOffsets = new Map();
-  const markerScales = [1, 1.35, 0.75];
-  const hullOpacityValues = [0.18, 0.34, 0.08];
-  let activeTool = "pan";
-  let clickTimer = 0;
-  let resizeTimer = 0;
-  let currentPair = data.startPair;
-  let view = null;
-  let frame = null;
-  let drag = null;
-  let labelDrag = null;
-  let selectionRect = null;
-  let lassoPoints = [];
-  let spikePoint = null;
-  let subtitle = "";
-  let legendVisible = true;
-  let hoverEnabled = true;
-  let grayMode = false;
-  let labelMode = 0;
-  let markerScaleIndex = 0;
-  let squarePlot = false;
-  let groupLabels = false;
-  let groupLabelStyle = 0;
-  let hullsVisible = false;
-  let hullOpacityIndex = 0;
-  let regressionVisible = false;
-  let spikesVisible = false;
-
-  function el(name, attrs = {}, text = null) {
-    const node = document.createElementNS(ns, name);
-    for (const [key, value] of Object.entries(attrs)) {
-      node.setAttribute(key, String(value));
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>smartPCA</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --text: #222529;
+      --muted: #6c757d;
+      --line: #d9dee3;
+      --grid: #edf0f2;
+      --toolbar: #ffffff;
+      --plot: #ffffff;
+      --control: #f8f9fa;
+      --blue: #0d6efd;
     }
-    if (text !== null) {
-      node.textContent = text;
+    * {
+      box-sizing: border-box;
     }
-    return node;
-  }
-
-  function clear(node) {
-    while (node.firstChild) {
-      node.removeChild(node.firstChild);
+    html,
+    body {
+      width: 100%;
+      height: 100%;
     }
-  }
-
-  function sampleKey(sample) {
-    return `${sample.pop}\u0000${sample.sample}`;
-  }
-
-  function groupLabelKey(pop) {
-    return `${currentPair}\u0000${pop}`;
-  }
-
-  function visiblePops() {
-    return data.pops.filter((pop) => !hiddenPops.has(pop));
-  }
-
-  function visibleSamples() {
-    return data.samples.filter((sample) => !hiddenPops.has(sample.pop));
-  }
-
-  function currentPairInfo() {
-    return data.pairs.find((item) => item.key === currentPair) || data.pairs[0];
-  }
-
-  function pairLimits(pairKey = currentPair) {
-    const limits = data.limits[pairKey];
-    return {
-      xMin: limits.x[0],
-      xMax: limits.x[1],
-      yMin: limits.y[0],
-      yMax: limits.y[1],
-    };
-  }
-
-  function setViewToPair(pairKey = currentPair) {
-    view = pairLimits(pairKey);
-  }
-
-  function axisLimits(values) {
-    const lo = Math.min(...values);
-    const hi = Math.max(...values);
-    const pad = Math.abs(hi - lo) < 1e-12 ? Math.max(Math.abs(lo) * 0.05, 0.01) : (hi - lo) * 0.06;
-    return [lo - pad, hi + pad];
-  }
-
-  function updateMeta() {
-    const shown = visiblePops().length;
-    meta.textContent = `${data.evecName} - ${data.samples.length} samples - ${shown}/${data.pops.length} populations shown`;
-  }
-
-  function formatTick(value) {
-    if (Math.abs(value) < 1e-12) {
-      return "0";
+    body {
+      display: flex;
+      flex-direction: column;
+      margin: 0;
+      overflow: hidden;
+      background: var(--plot);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 14px;
+      line-height: 1.4;
     }
-    const abs = Math.abs(value);
-    if (abs < 0.001 || abs >= 1000) {
-      return value.toExponential(2);
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 48px;
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      background: var(--toolbar);
+      white-space: nowrap;
     }
-    return Number(value.toPrecision(4)).toString();
-  }
-
-  function clamp(value, min, max) {
-    if (min > max) {
-      return (min + max) / 2;
+    .brand {
+      flex: 0 0 auto;
+      min-width: 0;
+      max-width: 280px;
+      margin-right: 8px;
+      overflow: hidden;
+      color: #1f2933;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0;
+      text-overflow: ellipsis;
     }
-    return Math.max(min, Math.min(max, value));
-  }
-
-  function estimateTextWidth(text, fontSize = 11) {
-    let width = 0;
-    for (const char of text) {
-      if (char === " ") {
-        width += fontSize * 0.35;
-      } else if ("._-:()".includes(char)) {
-        width += fontSize * 0.38;
-      } else if (char >= "A" && char <= "Z") {
-        width += fontSize * 0.68;
-      } else if (char >= "0" && char <= "9") {
-        width += fontSize * 0.58;
-      } else {
-        width += fontSize * 0.54;
+    .toolbar-spacer {
+      flex: 1 1 auto;
+    }
+    .modebar {
+      display: inline-flex;
+      flex: 0 1 auto;
+      flex-wrap: wrap;
+      gap: 2px;
+      min-width: 0;
+    }
+    .tool-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 28px;
+      min-height: 28px;
+      padding: 2px 6px;
+      border-color: transparent;
+      background: transparent;
+      color: #7a8087;
+      font-size: 11px;
+      line-height: 1;
+    }
+    .tool-button:hover {
+      border-color: #c7ccd1;
+      background: #f5f7f9;
+      color: #202124;
+    }
+    .tool-button.is-active {
+      color: var(--blue);
+      background: #eef5ff;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    label.control {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    select,
+    button {
+      min-height: 32px;
+      border: 1px solid #bfc6cc;
+      border-radius: 4px;
+      background: var(--control);
+      color: var(--text);
+      font: inherit;
+    }
+    select {
+      min-width: 132px;
+      padding: 4px 30px 4px 10px;
+    }
+    button {
+      padding: 4px 10px;
+      cursor: pointer;
+    }
+    button:hover,
+    select:hover {
+      border-color: #9aa4ad;
+      background: #ffffff;
+    }
+    #graph {
+      position: relative;
+      flex: 1 1 auto;
+      min-height: 420px;
+      background: var(--plot);
+    }
+    #plot {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    #legend {
+      position: absolute;
+      top: 50px;
+      right: 16px;
+      width: min(280px, calc(100vw - 48px));
+      max-height: calc(100% - 66px);
+      overflow: auto;
+      padding: 8px 10px;
+      border: 1px solid rgba(0, 0, 0, 0.16);
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.94);
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+      user-select: none;
+    }
+    #tooltip {
+      position: absolute;
+      z-index: 3;
+      display: none;
+      max-width: 260px;
+      padding: 6px 8px;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.97);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.14);
+      color: #202124;
+      font-size: 12px;
+      line-height: 1.35;
+      pointer-events: none;
+      white-space: pre-line;
+    }
+    .legend-item {
+      display: grid;
+      grid-template-columns: 20px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 7px;
+      min-height: 23px;
+      padding: 2px 0;
+      cursor: pointer;
+    }
+    .legend-item:hover .legend-label {
+      color: #000000;
+      text-decoration: underline;
+    }
+    .legend-icon {
+      display: block;
+      width: 18px;
+      height: 18px;
+    }
+    .legend-label {
+      overflow: hidden;
+      color: #333333;
+      font-size: 12px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .legend-count {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .legend-item.is-hidden .legend-icon {
+      opacity: 0.32;
+    }
+    .legend-item.is-hidden .legend-label,
+    .legend-item.is-hidden .legend-count {
+      color: #a0a0a0;
+    }
+    .axis-label {
+      fill: var(--text);
+      font-size: 13px;
+    }
+    .tick-label {
+      fill: #555c63;
+      font-size: 11px;
+    }
+    .plot-heading {
+      fill: var(--text);
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .plot-subtitle {
+      fill: var(--muted);
+      font-size: 12px;
+    }
+    .point-label,
+    .group-label {
+      font-size: 10px;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.84);
+      stroke-linejoin: round;
+      stroke-width: 3px;
+    }
+    .group-label {
+      font-size: 11px;
+      font-weight: 600;
+      stroke: rgba(255, 255, 255, 0.9);
+      pointer-events: none;
+    }
+    .group-label-badge {
+      cursor: move;
+      pointer-events: all;
+    }
+    .group-label-line {
+      pointer-events: none;
+    }
+    .group-label-line {
+      stroke-width: 1;
+    }
+    .selection-box {
+      fill: rgba(13, 110, 253, 0.12);
+      stroke: var(--blue);
+      stroke-dasharray: 4 3;
+      stroke-width: 1;
+    }
+    .lasso-line {
+      fill: rgba(13, 110, 253, 0.08);
+      stroke: var(--blue);
+      stroke-width: 1;
+    }
+    .spike-line {
+      stroke: #8c949c;
+      stroke-dasharray: 2 3;
+      stroke-width: 1;
+      pointer-events: none;
+    }
+    @media (max-width: 760px) {
+      body {
+        overflow: auto;
+      }
+      .toolbar {
+        align-items: stretch;
+        flex-wrap: wrap;
+      }
+      .toolbar-spacer {
+        display: none;
+      }
+      .brand,
+      .meta,
+      label.control,
+      select,
+      button {
+        flex: 1 1 auto;
+      }
+      #graph {
+        min-height: 640px;
+      }
+      #legend {
+        top: auto;
+        right: 8px;
+        bottom: 8px;
+        left: 8px;
+        width: auto;
+        max-height: 180px;
       }
     }
-    return Math.ceil(width);
-  }
-
-  function niceTicks(min, max, count = 7) {
-    const span = max - min;
-    if (!(span > 0)) {
-      return [min];
-    }
-    const rawStep = span / Math.max(1, count - 1);
-    const exponent = Math.floor(Math.log10(rawStep));
-    const base = 10 ** exponent;
-    const fraction = rawStep / base;
-    const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
-    const step = niceFraction * base;
-    const start = Math.ceil(min / step) * step;
-    const end = Math.floor(max / step) * step;
-    const ticks = [];
-    for (let value = start; value <= end + step * 0.5; value += step) {
-      ticks.push(Number(value.toPrecision(12)));
-    }
-    if (ticks.length === 0) {
-      ticks.push(min, max);
-    }
-    return ticks;
-  }
-
-  function colorForPop(pop) {
-    return grayMode ? "#b8b8b8" : data.styles[pop].color;
-  }
-
-  function markerSize() {
-    return data.pointSize * markerScales[markerScaleIndex];
-  }
-
-  function isMobileLayout() {
-    return window.matchMedia("(max-width: 760px)").matches;
-  }
-
-  function layoutFrame(width, height) {
-    const legendWidth = legendVisible && !isMobileLayout() ? Math.min(300, legend.offsetWidth + 34) : 0;
-    const baseMargin = { left: 72, right: 28 + legendWidth, top: 50, bottom: 62 };
-    const availableWidth = Math.max(80, width - baseMargin.left - baseMargin.right);
-    const availableHeight = Math.max(80, height - baseMargin.top - baseMargin.bottom);
-
-    if (!squarePlot) {
-      const margin = baseMargin;
-      return {
-        width,
-        height,
-        margin,
-        innerWidth: availableWidth,
-        innerHeight: availableHeight,
-        plotRight: margin.left + availableWidth,
-        plotBottom: margin.top + availableHeight,
-      };
-    }
-
-    const size = Math.min(availableWidth, availableHeight);
-    const extraX = Math.max(0, (availableWidth - size) / 2);
-    const extraY = Math.max(0, (availableHeight - size) / 2);
-    const margin = {
-      left: baseMargin.left + extraX,
-      right: baseMargin.right + extraX,
-      top: baseMargin.top + extraY,
-      bottom: baseMargin.bottom + extraY,
-    };
-    return {
-      width,
-      height,
-      margin,
-      innerWidth: size,
-      innerHeight: size,
-      plotRight: margin.left + size,
-      plotBottom: margin.top + size,
-    };
-  }
-
-  function positionLegend() {
-    if (!frame || isMobileLayout()) {
-      legend.style.top = "";
-      legend.style.right = "";
-      legend.style.bottom = "";
-      legend.style.left = "";
-      legend.style.maxHeight = "";
-      return;
-    }
-    legend.style.top = `${frame.margin.top}px`;
-    legend.style.left = `${clamp(frame.plotRight + 16, 8, frame.width - legend.offsetWidth - 8)}px`;
-    legend.style.right = "";
-    legend.style.bottom = "";
-    legend.style.maxHeight = `calc(100% - ${frame.margin.top + 16}px)`;
-  }
-
-  function defaultGroupLabelOffset(index) {
-    const angle = -Math.PI / 3 + index * 2.399963229728653;
-    return {
-      dx: Math.cos(angle) * 54,
-      dy: Math.sin(angle) * 34,
-    };
-  }
-
-  function labelLineEnd(centroid, label, width, height) {
-    const dx = label.x - centroid.x;
-    const dy = label.y - centroid.y;
-    if (Math.hypot(dx, dy) < 1) {
-      return label;
-    }
-    const sx = dx === 0 ? Infinity : (width / 2) / Math.abs(dx);
-    const sy = dy === 0 ? Infinity : (height / 2) / Math.abs(dy);
-    const scale = Math.min(sx, sy, 1);
-    return {
-      x: label.x - dx * scale,
-      y: label.y - dy * scale,
-    };
-  }
-
-  function polygonPoints(cx, cy, sides, radius, rotation = -Math.PI / 2) {
-    const points = [];
-    for (let i = 0; i < sides; i += 1) {
-      const angle = rotation + (2 * Math.PI * i) / sides;
-      points.push(`${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius}`);
-    }
-    return points.join(" ");
-  }
-
-  function markerElement(marker, x, y, size, color, opacity, selected = false) {
-    const common = {
-      fill: color,
-      "fill-opacity": opacity,
-      stroke: selected ? "#d62728" : "#222222",
-      "stroke-width": selected ? 1.7 : 0.75,
-      "stroke-opacity": 0.9,
-    };
-    const s = selected ? size * 1.18 : size;
-    if (marker === "s") {
-      return el("rect", { ...common, x: x - s, y: y - s, width: 2 * s, height: 2 * s });
-    }
-    if (marker === "^") {
-      return el("polygon", { ...common, points: `${x},${y - 1.25 * s} ${x - 1.15 * s},${y + s} ${x + 1.15 * s},${y + s}` });
-    }
-    if (marker === "D") {
-      return el("polygon", { ...common, points: `${x},${y - 1.2 * s} ${x + 1.2 * s},${y} ${x},${y + 1.2 * s} ${x - 1.2 * s},${y}` });
-    }
-    if (marker === "v") {
-      return el("polygon", { ...common, points: `${x},${y + 1.25 * s} ${x - 1.15 * s},${y - s} ${x + 1.15 * s},${y - s}` });
-    }
-    if (marker === "<") {
-      return el("polygon", { ...common, points: `${x - 1.25 * s},${y} ${x + s},${y - 1.15 * s} ${x + s},${y + 1.15 * s}` });
-    }
-    if (marker === ">") {
-      return el("polygon", { ...common, points: `${x + 1.25 * s},${y} ${x - s},${y - 1.15 * s} ${x - s},${y + 1.15 * s}` });
-    }
-    if (marker === "h") {
-      return el("polygon", { ...common, points: polygonPoints(x, y, 6, 1.18 * s, Math.PI / 6) });
-    }
-    if (marker === "p" || marker === "P" || marker === "*") {
-      return el("polygon", { ...common, points: polygonPoints(x, y, 5, 1.2 * s) });
-    }
-    if (marker === "X") {
-      const group = el("g");
-      group.appendChild(el("line", { x1: x - s, y1: y - s, x2: x + s, y2: y + s, stroke: color, "stroke-width": selected ? 3 : 2.3, "stroke-linecap": "round", "stroke-opacity": opacity }));
-      group.appendChild(el("line", { x1: x + s, y1: y - s, x2: x - s, y2: y + s, stroke: color, "stroke-width": selected ? 3 : 2.3, "stroke-linecap": "round", "stroke-opacity": opacity }));
-      return group;
-    }
-    return el("circle", { ...common, cx: x, cy: y, r: s });
-  }
-
-  function addTitle(node, sample, pcx, pcy) {
-    if (!hoverEnabled) {
-      return;
-    }
-    const title = el("title");
-    title.textContent = `${sample.sample}\n${sample.pop}\nPC${pcx}: ${formatTick(sample.pcs[pcx - 1])}\nPC${pcy}: ${formatTick(sample.pcs[pcy - 1])}`;
-    node.insertBefore(title, node.firstChild);
-  }
-
-  function hideTooltip() {
-    tooltip.style.display = "none";
-  }
-
-  function nearestHoverSample(point) {
-    if (!hoverEnabled || !frame || !inPlot(point)) {
-      return null;
-    }
-    const pair = currentPairInfo();
-    let nearest = null;
-    let nearestDistance = Infinity;
-    const threshold = Math.max(12, markerSize() * 3.5);
-    for (const sample of visibleSamples()) {
-      const screen = dataToScreen(sample.pcs[pair.pcx - 1], sample.pcs[pair.pcy - 1]);
-      const distance = Math.hypot(screen.x - point.x, screen.y - point.y);
-      if (distance < nearestDistance && distance <= threshold) {
-        nearest = { sample, screen };
-        nearestDistance = distance;
-      }
-    }
-    return nearest;
-  }
-
-  function updateTooltip(point) {
-    const hit = nearestHoverSample(point);
-    if (!hit) {
-      hideTooltip();
-      return;
-    }
-    const pair = currentPairInfo();
-    tooltip.textContent = `${hit.sample.sample}\n${hit.sample.pop}\nPC${pair.pcx}: ${formatTick(hit.sample.pcs[pair.pcx - 1])}\nPC${pair.pcy}: ${formatTick(hit.sample.pcs[pair.pcy - 1])}`;
-    tooltip.style.display = "block";
-    const left = Math.max(8, Math.min(hit.screen.x + 12, frame.width - tooltip.offsetWidth - 8));
-    const top = Math.max(8, Math.min(hit.screen.y + 12, frame.height - tooltip.offsetHeight - 8));
-    tooltip.style.left = `${left}px`;
-    tooltip.style.top = `${top}px`;
-  }
-
-  function screenToData(x, y) {
-    return {
-      x: view.xMin + ((x - frame.margin.left) / frame.innerWidth) * (view.xMax - view.xMin),
-      y: view.yMin + ((frame.plotBottom - y) / frame.innerHeight) * (view.yMax - view.yMin),
-    };
-  }
-
-  function dataToScreen(x, y) {
-    return {
-      x: frame.margin.left + ((x - view.xMin) / (view.xMax - view.xMin)) * frame.innerWidth,
-      y: frame.plotBottom - ((y - view.yMin) / (view.yMax - view.yMin)) * frame.innerHeight,
-    };
-  }
-
-  function eventPoint(event) {
-    const rect = svg.getBoundingClientRect();
-    return {
-      x: (event.clientX - rect.left) * (frame.width / rect.width),
-      y: (event.clientY - rect.top) * (frame.height / rect.height),
-    };
-  }
-
-  function inPlot(point) {
-    return (
-      frame &&
-      point.x >= frame.margin.left &&
-      point.x <= frame.plotRight &&
-      point.y >= frame.margin.top &&
-      point.y <= frame.plotBottom
-    );
-  }
-
-  function pointsForPop(pop, pcx, pcy) {
-    return data.samples
-      .filter((sample) => sample.pop === pop && !hiddenPops.has(pop))
-      .map((sample) => ({ x: sample.pcs[pcx - 1], y: sample.pcs[pcy - 1], sample }));
-  }
-
-  function convexHull(points) {
-    if (points.length < 3) {
-      return points;
-    }
-    const sorted = [...points].sort((a, b) => (a.x === b.x ? a.y - b.y : a.x - b.x));
-    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    const lower = [];
-    for (const point of sorted) {
-      while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) {
-        lower.pop();
-      }
-      lower.push(point);
-    }
-    const upper = [];
-    for (let i = sorted.length - 1; i >= 0; i -= 1) {
-      const point = sorted[i];
-      while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) {
-        upper.pop();
-      }
-      upper.push(point);
-    }
-    lower.pop();
-    upper.pop();
-    return lower.concat(upper);
-  }
-
-  function regressionLine(points) {
-    if (points.length < 2) {
-      return null;
-    }
-    const n = points.length;
-    const sx = points.reduce((total, point) => total + point.x, 0);
-    const sy = points.reduce((total, point) => total + point.y, 0);
-    const sxx = points.reduce((total, point) => total + point.x * point.x, 0);
-    const sxy = points.reduce((total, point) => total + point.x * point.y, 0);
-    const denom = n * sxx - sx * sx;
-    if (Math.abs(denom) < 1e-12) {
-      const yValues = points.map((point) => point.y);
-      return { x0: points[0].x, y0: Math.min(...yValues), x1: points[0].x, y1: Math.max(...yValues) };
-    }
-    const slope = (n * sxy - sx * sy) / denom;
-    const intercept = (sy - slope * sx) / n;
-    const xValues = points.map((point) => point.x);
-    const x0 = Math.min(...xValues);
-    const x1 = Math.max(...xValues);
-    return { x0, y0: intercept + slope * x0, x1, y1: intercept + slope * x1 };
-  }
-
-  function pathFromScreenPoints(points, close = false) {
-    if (!points.length) {
-      return "";
-    }
-    const body = points.map((point) => `${point.x},${point.y}`).join(" L ");
-    return `M ${body}${close ? " Z" : ""}`;
-  }
-
-  function drawHulls(pcx, pcy) {
-    if (!hullsVisible) {
-      return;
-    }
-    for (const pop of data.pops) {
-      const points = pointsForPop(pop, pcx, pcy);
-      if (points.length < 2) {
-        continue;
-      }
-      const color = colorForPop(pop);
-      if (points.length === 2) {
-        const a = dataToScreen(points[0].x, points[0].y);
-        const b = dataToScreen(points[1].x, points[1].y);
-        svg.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, "stroke-width": 2, "stroke-opacity": hullOpacityValues[hullOpacityIndex] + 0.15 }));
-        continue;
-      }
-      const hull = convexHull(points).map((point) => dataToScreen(point.x, point.y));
-      svg.appendChild(el("path", {
-        d: pathFromScreenPoints(hull, true),
-        fill: color,
-        "fill-opacity": hullOpacityValues[hullOpacityIndex],
-        stroke: color,
-        "stroke-opacity": hullOpacityValues[hullOpacityIndex] + 0.15,
-        "stroke-width": 1,
-      }));
-    }
-  }
-
-  function drawRegressions(pcx, pcy) {
-    if (!regressionVisible) {
-      return;
-    }
-    for (const pop of data.pops) {
-      const points = pointsForPop(pop, pcx, pcy);
-      const line = regressionLine(points);
-      if (!line) {
-        continue;
-      }
-      const a = dataToScreen(line.x0, line.y0);
-      const b = dataToScreen(line.x1, line.y1);
-      svg.appendChild(el("line", {
-        x1: a.x,
-        y1: a.y,
-        x2: b.x,
-        y2: b.y,
-        stroke: colorForPop(pop),
-        "stroke-width": 1.6,
-        "stroke-dasharray": "3 3",
-        "stroke-opacity": 0.7,
-      }));
-    }
-  }
-
-  function drawGroupLabels(pcx, pcy) {
-    if (!groupLabels) {
-      return;
-    }
-    for (const [index, pop] of data.pops.entries()) {
-      const points = pointsForPop(pop, pcx, pcy);
-      if (!points.length) {
-        continue;
-      }
-      const meanX = points.reduce((total, point) => total + point.x, 0) / points.length;
-      const meanY = points.reduce((total, point) => total + point.y, 0) / points.length;
-      const centroid = dataToScreen(meanX, meanY);
-      const label = `${pop} (${points.length})`;
-      const labelWidth = estimateTextWidth(label, 11) + 14;
-      const labelHeight = 20;
-      const offset = groupLabelOffsets.get(groupLabelKey(pop)) || defaultGroupLabelOffset(index);
-      const x = clamp(centroid.x + offset.dx, frame.margin.left + labelWidth / 2 + 5, frame.plotRight - labelWidth / 2 - 5);
-      const y = clamp(centroid.y + offset.dy, frame.margin.top + labelHeight / 2 + 5, frame.plotBottom - labelHeight / 2 - 5);
-      const labelPosition = { x, y };
-      const lineEnd = labelLineEnd(centroid, labelPosition, labelWidth, labelHeight);
-      svg.appendChild(el("line", {
-        x1: centroid.x,
-        y1: centroid.y,
-        x2: lineEnd.x,
-        y2: lineEnd.y,
-        class: "group-label-line",
-        stroke: colorForPop(pop),
-        "stroke-opacity": groupLabelStyle === 2 ? 0.68 : 0.44,
-      }));
-      const group = el("g", {
-        class: "group-label-badge",
-        "data-pop": pop,
-        "data-label-x": x,
-        "data-label-y": y,
-        "data-centroid-x": centroid.x,
-        "data-centroid-y": centroid.y,
-        "data-label-width": labelWidth,
-        "data-label-height": labelHeight,
-      });
-      group.appendChild(el("rect", {
-        x: x - labelWidth / 2,
-        y: y - labelHeight / 2,
-        width: labelWidth,
-        height: labelHeight,
-        rx: 4,
-        ry: 4,
-        class: "group-label-hitbox",
-        fill: "#ffffff",
-        "fill-opacity": 0,
-        stroke: "none",
-      }));
-      if (groupLabelStyle !== 1) {
-        group.appendChild(el("rect", {
-          x: x - labelWidth / 2,
-          y: y - labelHeight / 2,
-          width: labelWidth,
-          height: labelHeight,
-          rx: 4,
-          ry: 4,
-          class: "group-label-bg",
-          fill: "#ffffff",
-          "fill-opacity": groupLabelStyle === 2 ? 0.68 : 0.52,
-          stroke: colorForPop(pop),
-          "stroke-opacity": groupLabelStyle === 2 ? 0.78 : 0.48,
-          "stroke-width": groupLabelStyle === 2 ? 1.5 : 1,
-        }));
-      }
-      const text = el("text", {
-        x,
-        y: y + 4,
-        "text-anchor": "middle",
-        class: "group-label",
-        fill: colorForPop(pop),
-      }, label);
-      if (groupLabelStyle === 1) {
-        text.setAttribute("stroke-width", "0");
-      } else if (groupLabelStyle === 2) {
-        text.setAttribute("stroke-width", "4");
-      } else {
-        text.setAttribute("stroke-width", "2.4");
-      }
-      group.appendChild(text);
-      group.addEventListener("pointerdown", startGroupLabelDrag);
-      svg.appendChild(group);
-    }
-  }
-
-  function drawPlot() {
-    clear(svg);
-    updateMeta();
-
-    const pair = currentPairInfo();
-    const pcx = pair.pcx;
-    const pcy = pair.pcy;
-    const rect = graph.getBoundingClientRect();
-    const width = Math.max(640, Math.floor(rect.width));
-    const height = Math.max(420, Math.floor(rect.height));
-    frame = layoutFrame(width, height);
-    positionLegend();
-    const { margin, innerWidth, innerHeight, plotRight, plotBottom } = frame;
-
-    svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    svg.appendChild(el("title", { id: "plotTitle" }, `${data.title} - ${pair.label}`));
-    svg.appendChild(el("rect", { x: 0, y: 0, width, height, fill: "#ffffff" }));
-    svg.appendChild(el("text", { x: margin.left, y: 24, "text-anchor": "start", class: "plot-heading" }, pair.label));
-    if (subtitle) {
-      svg.appendChild(el("text", { x: margin.left, y: 41, "text-anchor": "start", class: "plot-subtitle" }, subtitle));
-    }
-
-    for (const tick of niceTicks(view.xMin, view.xMax)) {
-      const x = dataToScreen(tick, view.yMin).x;
-      svg.appendChild(el("line", { x1: x, y1: margin.top, x2: x, y2: plotBottom, stroke: "#edf0f2", "stroke-width": 1 }));
-      svg.appendChild(el("line", { x1: x, y1: plotBottom, x2: x, y2: plotBottom + 5, stroke: "#222529", "stroke-width": 1 }));
-      svg.appendChild(el("text", { x, y: plotBottom + 21, "text-anchor": "middle", class: "tick-label" }, formatTick(tick)));
-    }
-    for (const tick of niceTicks(view.yMin, view.yMax)) {
-      const y = dataToScreen(view.xMin, tick).y;
-      svg.appendChild(el("line", { x1: margin.left, y1: y, x2: plotRight, y2: y, stroke: "#edf0f2", "stroke-width": 1 }));
-      svg.appendChild(el("line", { x1: margin.left - 5, y1: y, x2: margin.left, y2: y, stroke: "#222529", "stroke-width": 1 }));
-      svg.appendChild(el("text", { x: margin.left - 9, y: y + 4, "text-anchor": "end", class: "tick-label" }, formatTick(tick)));
-    }
-
-    if (view.xMin < 0 && view.xMax > 0) {
-      const x = dataToScreen(0, view.yMin).x;
-      svg.appendChild(el("line", { x1: x, y1: margin.top, x2: x, y2: plotBottom, stroke: "#cfd5da", "stroke-width": 1 }));
-    }
-    if (view.yMin < 0 && view.yMax > 0) {
-      const y = dataToScreen(view.xMin, 0).y;
-      svg.appendChild(el("line", { x1: margin.left, y1: y, x2: plotRight, y2: y, stroke: "#cfd5da", "stroke-width": 1 }));
-    }
-
-    svg.appendChild(el("rect", { x: margin.left, y: margin.top, width: innerWidth, height: innerHeight, fill: "none", stroke: "#222529", "stroke-width": 1 }));
-
-    drawHulls(pcx, pcy);
-    drawRegressions(pcx, pcy);
-
-    for (const pop of data.pops) {
-      if (hiddenPops.has(pop)) {
-        continue;
-      }
-      const color = colorForPop(pop);
-      const style = data.styles[pop];
-      for (const sample of data.samples) {
-        if (sample.pop !== pop) {
-          continue;
-        }
-        const pointPos = dataToScreen(sample.pcs[pcx - 1], sample.pcs[pcy - 1]);
-        const selected = selectedSamples.has(sampleKey(sample));
-        const point = markerElement(style.marker, pointPos.x, pointPos.y, markerSize(), color, data.alpha, selected);
-        addTitle(point, sample, pcx, pcy);
-        svg.appendChild(point);
-        if (labelMode > 0) {
-          const label = labelMode === 1 ? sample.sample : sample.pop;
-          svg.appendChild(el("text", {
-            x: pointPos.x,
-            y: pointPos.y - markerSize() - 4,
-            "text-anchor": "middle",
-            class: "point-label",
-            fill: color,
-          }, label));
-        }
-      }
-    }
-
-    drawGroupLabels(pcx, pcy);
-
-    if (selectionRect) {
-      const x = Math.min(selectionRect.x0, selectionRect.x1);
-      const y = Math.min(selectionRect.y0, selectionRect.y1);
-      svg.appendChild(el("rect", {
-        x,
-        y,
-        width: Math.abs(selectionRect.x1 - selectionRect.x0),
-        height: Math.abs(selectionRect.y1 - selectionRect.y0),
-        class: "selection-box",
-      }));
-    }
-    if (lassoPoints.length > 1) {
-      svg.appendChild(el("path", { d: pathFromScreenPoints(lassoPoints, false), class: "lasso-line" }));
-    }
-    if (spikesVisible && spikePoint && inPlot(spikePoint)) {
-      svg.appendChild(el("line", { x1: spikePoint.x, y1: margin.top, x2: spikePoint.x, y2: plotBottom, class: "spike-line" }));
-      svg.appendChild(el("line", { x1: margin.left, y1: spikePoint.y, x2: plotRight, y2: spikePoint.y, class: "spike-line" }));
-    }
-
-    svg.appendChild(el("text", { x: margin.left + innerWidth / 2, y: plotBottom + 43, "text-anchor": "middle", class: "axis-label" }, `PC${pcx}`));
-    const yAxisLabelX = margin.left - 54;
-    const yAxisLabelY = margin.top + innerHeight / 2;
-    svg.appendChild(el("text", { x: yAxisLabelX, y: yAxisLabelY, "text-anchor": "middle", class: "axis-label", transform: `rotate(-90 ${yAxisLabelX} ${yAxisLabelY})` }, `PC${pcy}`));
-    updateToolButtons();
-    if (!hoverEnabled) {
-      hideTooltip();
-    }
-  }
-
-  function drawLegend() {
-    clear(legend);
-    for (const pop of data.pops) {
-      const item = document.createElement("div");
-      item.className = "legend-item";
-      item.dataset.pop = pop;
-      item.title = "Click to show/hide. Double-click to isolate/restore.";
-      const icon = document.createElementNS(ns, "svg");
-      icon.classList.add("legend-icon");
-      icon.setAttribute("viewBox", "0 0 18 18");
-      icon.appendChild(markerElement(data.styles[pop].marker, 9, 9, 4.2, colorForPop(pop), data.alpha));
-      const label = document.createElement("span");
-      label.className = "legend-label";
-      label.textContent = pop;
-      const count = document.createElement("span");
-      count.className = "legend-count";
-      count.textContent = data.counts[pop] || 0;
-      item.appendChild(icon);
-      item.appendChild(label);
-      item.appendChild(count);
-      item.addEventListener("click", () => {
-        window.clearTimeout(clickTimer);
-        clickTimer = window.setTimeout(() => {
-          if (hiddenPops.has(pop)) {
-            hiddenPops.delete(pop);
-          } else {
-            hiddenPops.add(pop);
-          }
-          refresh();
-        }, 180);
-      });
-      item.addEventListener("dblclick", () => {
-        window.clearTimeout(clickTimer);
-        const onlyThisVisible = visiblePops().length === 1 && !hiddenPops.has(pop);
-        hiddenPops.clear();
-        if (!onlyThisVisible) {
-          for (const otherPop of data.pops) {
-            if (otherPop !== pop) {
-              hiddenPops.add(otherPop);
-            }
-          }
-        }
-        refresh();
-      });
-      legend.appendChild(item);
-    }
-    syncLegend();
-  }
-
-  function syncLegend() {
-    legend.style.display = legendVisible ? "" : "none";
-    positionLegend();
-    for (const item of legend.querySelectorAll(".legend-item")) {
-      item.classList.toggle("is-hidden", hiddenPops.has(item.dataset.pop));
-    }
-  }
-
-  function setActiveTool(tool) {
-    activeTool = tool;
-    updateToolButtons();
-  }
-
-  function zoomAt(factor, cx = null, cy = null) {
-    const center = cx === null || cy === null
-      ? { x: (view.xMin + view.xMax) / 2, y: (view.yMin + view.yMax) / 2 }
-      : screenToData(cx, cy);
-    const left = center.x - view.xMin;
-    const right = view.xMax - center.x;
-    const bottom = center.y - view.yMin;
-    const top = view.yMax - center.y;
-    view = {
-      xMin: center.x - left * factor,
-      xMax: center.x + right * factor,
-      yMin: center.y - bottom * factor,
-      yMax: center.y + top * factor,
-    };
-    drawPlot();
-  }
-
-  function autoScaleVisible() {
-    const pair = currentPairInfo();
-    const samples = visibleSamples();
-    if (!samples.length) {
-      setViewToPair();
-      drawPlot();
-      return;
-    }
-    const xlim = axisLimits(samples.map((sample) => sample.pcs[pair.pcx - 1]));
-    const ylim = axisLimits(samples.map((sample) => sample.pcs[pair.pcy - 1]));
-    view = { xMin: xlim[0], xMax: xlim[1], yMin: ylim[0], yMax: ylim[1] };
-    drawPlot();
-  }
-
-  function resetAxes() {
-    setViewToPair();
-    selectedSamples.clear();
-    selectionRect = null;
-    lassoPoints = [];
-    drawPlot();
-  }
-
-  function resetPlot() {
-    hiddenPops.clear();
-    selectedSamples.clear();
-    groupLabelOffsets.clear();
-    subtitle = "";
-    legendVisible = true;
-    hoverEnabled = true;
-    grayMode = false;
-    labelMode = 0;
-    markerScaleIndex = 0;
-    squarePlot = false;
-    groupLabels = false;
-    groupLabelStyle = 0;
-    hullsVisible = false;
-    hullOpacityIndex = 0;
-    regressionVisible = false;
-    spikesVisible = false;
-    labelDrag = null;
-    selectionRect = null;
-    lassoPoints = [];
-    spikePoint = null;
-    hideTooltip();
-    setViewToPair();
-    drawLegend();
-    drawPlot();
-  }
-
-  function sanitizeFilename(value) {
-    return value.replace(/[^A-Za-z0-9_.-]+/g, "_").replace(/^_+|_+$/g, "") || "smartPCA";
-  }
-
-  function downloadPng() {
-    const clone = svg.cloneNode(true);
-    clone.setAttribute("xmlns", ns);
-    const style = el("style");
-    style.textContent = ".axis-label{font:13px Arial}.tick-label{font:11px Arial;fill:#555c63}.plot-heading{font:bold 14px Arial}.plot-subtitle{font:12px Arial;fill:#6c757d}.point-label{font:10px Arial;paint-order:stroke;stroke:rgba(255,255,255,.84);stroke-width:3px}.group-label{font:bold 11px Arial;paint-order:stroke;stroke:rgba(255,255,255,.9);stroke-linejoin:round}.group-label-line{stroke-width:1}";
-    clone.insertBefore(style, clone.firstChild);
-    const source = new XMLSerializer().serializeToString(clone);
-    const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const image = new Image();
-    image.onload = () => {
-      const scale = 2;
-      const canvas = document.createElement("canvas");
-      canvas.width = frame.width * scale;
-      canvas.height = frame.height * scale;
-      const context = canvas.getContext("2d");
-      context.fillStyle = "#ffffff";
-      context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(image, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      const link = document.createElement("a");
-      link.download = `${sanitizeFilename(data.title)}_${select.value.replace(":", "_")}.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-    };
-    image.src = url;
-  }
-
-  function pointInPolygon(point, polygon) {
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
-      const xi = polygon[i].x;
-      const yi = polygon[i].y;
-      const xj = polygon[j].x;
-      const yj = polygon[j].y;
-      const intersects = yi > point.y !== yj > point.y && point.x < ((xj - xi) * (point.y - yi)) / (yj - yi) + xi;
-      if (intersects) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
-
-  function selectByRect(rect) {
-    const pair = currentPairInfo();
-    const x0 = Math.min(rect.x0, rect.x1);
-    const x1 = Math.max(rect.x0, rect.x1);
-    const y0 = Math.min(rect.y0, rect.y1);
-    const y1 = Math.max(rect.y0, rect.y1);
-    selectedSamples.clear();
-    for (const sample of visibleSamples()) {
-      const p = dataToScreen(sample.pcs[pair.pcx - 1], sample.pcs[pair.pcy - 1]);
-      if (p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1) {
-        selectedSamples.add(sampleKey(sample));
-      }
-    }
-  }
-
-  function selectByLasso(points) {
-    if (points.length < 3) {
-      return;
-    }
-    const pair = currentPairInfo();
-    selectedSamples.clear();
-    for (const sample of visibleSamples()) {
-      const p = dataToScreen(sample.pcs[pair.pcx - 1], sample.pcs[pair.pcy - 1]);
-      if (pointInPolygon(p, points)) {
-        selectedSamples.add(sampleKey(sample));
-      }
-    }
-  }
-
-  function startGroupLabelDrag(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const point = eventPoint(event);
-    const target = event.currentTarget;
-    labelDrag = {
-      pop: target.dataset.pop,
-      x0: point.x,
-      y0: point.y,
-      labelX: Number(target.dataset.labelX),
-      labelY: Number(target.dataset.labelY),
-      centroidX: Number(target.dataset.centroidX),
-      centroidY: Number(target.dataset.centroidY),
-      width: Number(target.dataset.labelWidth),
-      height: Number(target.dataset.labelHeight),
-    };
-    hideTooltip();
-    svg.setPointerCapture(event.pointerId);
-  }
-
-  function moveGroupLabelDrag(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    const point = eventPoint(event);
-    const x = clamp(
-      labelDrag.labelX + point.x - labelDrag.x0,
-      frame.margin.left + labelDrag.width / 2 + 5,
-      frame.plotRight - labelDrag.width / 2 - 5
-    );
-    const y = clamp(
-      labelDrag.labelY + point.y - labelDrag.y0,
-      frame.margin.top + labelDrag.height / 2 + 5,
-      frame.plotBottom - labelDrag.height / 2 - 5
-    );
-    groupLabelOffsets.set(groupLabelKey(labelDrag.pop), {
-      dx: x - labelDrag.centroidX,
-      dy: y - labelDrag.centroidY,
-    });
-    drawPlot();
-  }
-
-  function endGroupLabelDrag(event) {
-    event.preventDefault();
-    event.stopPropagation();
-    labelDrag = null;
-    if (svg.hasPointerCapture(event.pointerId)) {
-      svg.releasePointerCapture(event.pointerId);
-    }
-  }
-
-  function startDrag(event) {
-    if (!frame) {
-      return;
-    }
-    const point = eventPoint(event);
-    if (!inPlot(point)) {
-      return;
-    }
-    event.preventDefault();
-    hideTooltip();
-    svg.setPointerCapture(event.pointerId);
-    drag = { x0: point.x, y0: point.y, lastX: point.x, lastY: point.y };
-    if (activeTool === "zoom" || activeTool === "select") {
-      selectionRect = { x0: point.x, y0: point.y, x1: point.x, y1: point.y };
-    } else if (activeTool === "lasso") {
-      lassoPoints = [point];
-    }
-  }
-
-  function moveDrag(event) {
-    if (labelDrag) {
-      moveGroupLabelDrag(event);
-      return;
-    }
-    const point = eventPoint(event);
-    spikePoint = inPlot(point) ? point : null;
-    if (!drag) {
-      updateTooltip(point);
-    }
-    if (!drag) {
-      if (spikesVisible) {
-        drawPlot();
-      }
-      return;
-    }
-    event.preventDefault();
-    if (activeTool === "pan") {
-      const dx = point.x - drag.lastX;
-      const dy = point.y - drag.lastY;
-      const xRange = view.xMax - view.xMin;
-      const yRange = view.yMax - view.yMin;
-      view.xMin -= (dx / frame.innerWidth) * xRange;
-      view.xMax -= (dx / frame.innerWidth) * xRange;
-      view.yMin += (dy / frame.innerHeight) * yRange;
-      view.yMax += (dy / frame.innerHeight) * yRange;
-      drag.lastX = point.x;
-      drag.lastY = point.y;
-    } else if (activeTool === "zoom" || activeTool === "select") {
-      selectionRect.x1 = Math.max(frame.margin.left, Math.min(frame.plotRight, point.x));
-      selectionRect.y1 = Math.max(frame.margin.top, Math.min(frame.plotBottom, point.y));
-    } else if (activeTool === "lasso" && inPlot(point)) {
-      lassoPoints.push(point);
-    }
-    drawPlot();
-  }
-
-  function endDrag(event) {
-    if (labelDrag) {
-      endGroupLabelDrag(event);
-      return;
-    }
-    if (!drag) {
-      return;
-    }
-    svg.releasePointerCapture(event.pointerId);
-    if (activeTool === "zoom" && selectionRect) {
-      const width = Math.abs(selectionRect.x1 - selectionRect.x0);
-      const height = Math.abs(selectionRect.y1 - selectionRect.y0);
-      if (width > 6 && height > 6) {
-        const a = screenToData(Math.min(selectionRect.x0, selectionRect.x1), Math.max(selectionRect.y0, selectionRect.y1));
-        const b = screenToData(Math.max(selectionRect.x0, selectionRect.x1), Math.min(selectionRect.y0, selectionRect.y1));
-        view = { xMin: a.x, xMax: b.x, yMin: a.y, yMax: b.y };
-      }
-    } else if (activeTool === "select" && selectionRect) {
-      selectByRect(selectionRect);
-    } else if (activeTool === "lasso") {
-      selectByLasso(lassoPoints);
-    }
-    drag = null;
-    selectionRect = null;
-    lassoPoints = [];
-    drawPlot();
-  }
-
-  function buildToolbar() {
-    const controls = [
-      ["png", "PNG", "Download PNG", () => downloadPng()],
-      ["zoom", "Zoom", "Drag box to zoom", () => setActiveTool("zoom"), () => activeTool === "zoom"],
-      ["pan", "Pan", "Drag to pan", () => setActiveTool("pan"), () => activeTool === "pan"],
-      ["select", "Box", "Drag box to select samples", () => setActiveTool("select"), () => activeTool === "select"],
-      ["lasso", "Lasso", "Draw lasso to select samples", () => setActiveTool("lasso"), () => activeTool === "lasso"],
-      ["zoomin", "+", "Zoom in", () => zoomAt(0.75)],
-      ["zoomout", "-", "Zoom out", () => zoomAt(1.33)],
-      ["autoscale", "Auto", "Autoscale to visible populations", () => autoScaleVisible()],
-      ["resetaxes", "Home", "Reset axes", () => resetAxes()],
-      ["spikes", "Spike", "Toggle cursor spike lines", () => { spikesVisible = !spikesVisible; drawPlot(); }, () => spikesVisible],
-      ["subtitle", "Sub", "Add or clear subtitle", () => { const value = prompt("Subtitle", subtitle); subtitle = value === null ? "" : value.trim(); drawPlot(); }],
-      ["legend", "Leg", "Toggle legend", () => { legendVisible = !legendVisible; syncLegend(); drawPlot(); }, () => legendVisible],
-      ["visibility", "Vis", "Show or hide all populations", () => { if (visiblePops().length) { for (const pop of data.pops) hiddenPops.add(pop); } else { hiddenPops.clear(); } refresh(); }],
-      ["hover", "Tip", "Toggle hover text", () => { hoverEnabled = !hoverEnabled; drawPlot(); }, () => hoverEnabled],
-      ["gray", "Gray", "Toggle color or gray", () => { grayMode = !grayMode; drawLegend(); drawPlot(); }, () => grayMode],
-      ["labels", "Aa", "Cycle point labels: none/sample/population", () => { labelMode = (labelMode + 1) % 3; drawPlot(); }, () => labelMode > 0],
-      ["size", "Dot", "Cycle marker size", () => { markerScaleIndex = (markerScaleIndex + 1) % markerScales.length; drawLegend(); drawPlot(); }, () => markerScaleIndex !== 0],
-      ["square", "Sq", "Toggle square plot area", () => { squarePlot = !squarePlot; drawPlot(); }, () => squarePlot],
-      ["groupstyle", "Lbl", "Cycle group label style", () => { groupLabelStyle = (groupLabelStyle + 1) % 3; drawPlot(); }, () => groupLabelStyle !== 0],
-      ["groups", "Grp", "Toggle population centroid labels", () => { groupLabels = !groupLabels; drawPlot(); }, () => groupLabels],
-      ["hulls", "Hull", "Toggle convex hulls", () => { hullsVisible = !hullsVisible; drawPlot(); }, () => hullsVisible],
-      ["hullop", "Op", "Cycle hull opacity", () => { hullOpacityIndex = (hullOpacityIndex + 1) % hullOpacityValues.length; drawPlot(); }, () => hullOpacityIndex !== 0],
-      ["regression", "Reg", "Toggle regression lines", () => { regressionVisible = !regressionVisible; drawPlot(); }, () => regressionVisible],
-    ];
-    for (const [id, label, title, action, active] of controls) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "tool-button";
-      button.dataset.tool = id;
-      button.textContent = label;
-      button.title = title;
-      button.addEventListener("click", action);
-      button.isActive = active || (() => false);
-      modebar.appendChild(button);
-    }
-  }
-
-  function updateToolButtons() {
-    for (const button of modebar.querySelectorAll(".tool-button")) {
-      button.classList.toggle("is-active", button.isActive());
-    }
-  }
-
-  function refresh() {
-    syncLegend();
-    drawPlot();
-  }
-
-  function handleWheel(event) {
-    if (!frame) {
-      return;
-    }
-    const point = eventPoint(event);
-    if (!inPlot(point)) {
-      return;
-    }
-    event.preventDefault();
-    zoomAt(event.deltaY < 0 ? 0.88 : 1.14, point.x, point.y);
-  }
-
-  for (const pair of data.pairs) {
-    const option = document.createElement("option");
-    option.value = pair.key;
-    option.textContent = pair.label;
-    select.appendChild(option);
-  }
-  select.value = data.startPair;
-  currentPair = select.value;
-  setViewToPair();
-  select.addEventListener("change", () => {
-    currentPair = select.value;
-    selectedSamples.clear();
-    setViewToPair();
-    drawPlot();
-  });
-  resetButton.addEventListener("click", resetPlot);
-  svg.addEventListener("pointerdown", startDrag);
-  svg.addEventListener("pointermove", moveDrag);
-  svg.addEventListener("pointerup", endDrag);
-  svg.addEventListener("pointercancel", endDrag);
-  svg.addEventListener("mouseleave", () => {
-    spikePoint = null;
-    hideTooltip();
-    if (spikesVisible) {
-      drawPlot();
-    }
-  });
-  svg.addEventListener("wheel", handleWheel, { passive: false });
-  window.addEventListener("resize", () => {
-    window.clearTimeout(resizeTimer);
-    resizeTimer = window.setTimeout(drawPlot, 80);
-  });
-
-  buildToolbar();
-  drawLegend();
-  drawPlot();
-})();
+  </style>
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand" id="pageTitle">smartPCA</div>
+    <label class="control" for="pairSelect">
+      PC pair
+      <select id="pairSelect"></select>
+    </label>
+    <button type="button" id="resetButton">Reset plot</button>
+    <div class="modebar" id="modebar" aria-label="Plot tools"></div>
+    <div class="toolbar-spacer"></div>
+    <div class="meta" id="meta"></div>
+  </header>
+  <main id="graph">
+    <svg id="plot" role="img" aria-labelledby="plotTitle"></svg>
+    <div id="legend" aria-label="Population legend"></div>
+    <div id="tooltip" role="status" aria-live="polite"></div>
+  </main>
+  <script id="plot-data" type="application/json">{"title":"smartPCA","evecName":"smartPCA.evec","pops":["English.DG","Han.DG","Papuan.DG","Balochi.DG","Kalash.DG","Pathan.DG","Sindhi_Pakistan.DG","Brahmin_Haryana","Gujjar","Meena","Muslim_Kashmiri","Rajput","Reddy_Telangana","Sikh_Jatt","Yadav_Rajasthan","Yadav_UP","Chamar_UP","Gujjar_Rajasthan","Jat_Hindu","Kamboj_Rajasthan","Kshatriya_UP","Pakistan_Gujjar","Ror_Haryana"],"styles":{"English.DG":{"color":"#1f77b4","marker":"o"},"Han.DG":{"color":"#aec7e8","marker":"s"},"Papuan.DG":{"color":"#ff7f0e","marker":"^"},"Balochi.DG":{"color":"#ffbb78","marker":"D"},"Kalash.DG":{"color":"#2ca02c","marker":"P"},"Pathan.DG":{"color":"#98df8a","marker":"X"},"Sindhi_Pakistan.DG":{"color":"#d62728","marker":"v"},"Brahmin_Haryana":{"color":"#ff9896","marker":"<"},"Gujjar":{"color":"#9467bd","marker":">"},"Meena":{"color":"#c5b0d5","marker":"h"},"Muslim_Kashmiri":{"color":"#8c564b","marker":"*"},"Rajput":{"color":"#c49c94","marker":"p"},"Reddy_Telangana":{"color":"#e377c2","marker":"o"},"Sikh_Jatt":{"color":"#f7b6d2","marker":"s"},"Yadav_Rajasthan":{"color":"#7f7f7f","marker":"^"},"Yadav_UP":{"color":"#c7c7c7","marker":"D"},"Chamar_UP":{"color":"#bcbd22","marker":"P"},"Gujjar_Rajasthan":{"color":"#dbdb8d","marker":"X"},"Jat_Hindu":{"color":"#17becf","marker":"v"},"Kamboj_Rajasthan":{"color":"#9edae5","marker":"<"},"Kshatriya_UP":{"color":"#1f77b4","marker":">"},"Pakistan_Gujjar":{"color":"#aec7e8","marker":"h"},"Ror_Haryana":{"color":"#ff7f0e","marker":"*"}},"counts":{"English.DG":12,"Han.DG":46,"Papuan.DG":32,"Balochi.DG":24,"Kalash.DG":22,"Pathan.DG":24,"Sindhi_Pakistan.DG":17,"Brahmin_Haryana":3,"Gujjar":4,"Meena":5,"Muslim_Kashmiri":9,"Rajput":3,"Reddy_Telangana":7,"Sikh_Jatt":19,"Yadav_Rajasthan":5,"Yadav_UP":3,"Chamar_UP":10,"Gujjar_Rajasthan":15,"Jat_Hindu":1,"Kamboj_Rajasthan":11,"Kshatriya_UP":7,"Pakistan_Gujjar":16,"Ror_Haryana":15},"samples":[{"sample":"HG00126.DG","pop":"English.DG","pcs":[-0.0573,0.1565,0.5119,-0.4353,-0.0266,-0.0,-0.0009,0.0043,0.0015,0.0033]},{"sample":"HG00128.DG","pop":"English.DG","pcs":[-0.0579,0.1593,-0.4959,-0.4484,0.0336,0.0001,-0.0003,0.0012,-0.0007,-0.001]},{"sample":"HG00129.DG","pop":"English.DG","pcs":[-0.0499,0.0963,0.0012,0.0343,-0.0008,0.0003,-0.001,-0.0347,0.1288,0.1214]},{"sample":"HG00130.DG","pop":"English.DG","pcs":[-0.0509,0.1054,-0.0003,0.0608,0.0059,0.0008,-0.0005,0.6167,-0.2753,-0.5413]},{"sample":"HG00131.DG","pop":"English.DG","pcs":[-0.0512,0.1033,0.0025,0.0495,0.0041,0.0009,-0.0004,-0.6429,0.2547,0.4085]},{"sample":"HG00160.DG","pop":"English.DG","pcs":[-0.0517,0.1074,0.0014,0.0643,-0.0279,-0.0006,0.0005,0.1153,0.3892,-0.0902]},{"sample":"HG00231.DG","pop":"English.DG","pcs":[-0.0504,0.095,-0.0026,0.0289,-0.0098,-0.0003,0.0015,-0.1001,-0.2486,0.152]},{"sample":"HG00232.DG","pop":"English.DG","pcs":[-0.0496,0.1045,-0.0041,0.0493,-0.0112,-0.001,-0.0001,-0.1986,0.1118,-0.318]},{"sample":"HG00233.DG","pop":"English.DG","pcs":[-0.0493,0.0996,0.0,0.0337,0.0006,-0.0001,-0.0012,0.1447,-0.1995,0.2535]},{"sample":"HG00234.DG","pop":"English.DG","pcs":[-0.0493,0.1022,0.0018,0.0475,0.0037,0.0006,0.0012,-0.1792,-0.5286,0.5576]},{"sample":"S_English-1.DG","pop":"English.DG","pcs":[-0.0572,0.1544,0.5036,-0.4605,-0.0268,-0.0,-0.0009,0.0043,0.0014,0.0032]},{"sample":"S_English-2.DG","pop":"English.DG","pcs":[-0.0578,0.157,-0.4878,-0.4748,0.0342,0.0001,-0.0003,0.0012,-0.0007,-0.0009]},{"sample":"B_Han-3.DG","pop":"Han.DG","pcs":[-0.07,-0.0336,-0.0004,-0.0062,-0.0531,-0.0216,0.2672,-0.1845,0.2681,-0.0646]},{"sample":"HGDP00774.DG","pop":"Han.DG","pcs":[-0.0613,-0.0263,0.0002,-0.0012,-0.0014,-0.0006,-0.0007,-0.0103,0.0034,-0.0017]},{"sample":"HGDP00775.DG","pop":"Han.DG","pcs":[-0.0698,-0.0337,-0.0004,-0.0063,-0.0523,-0.0203,0.269,-0.1539,0.2255,-0.0583]},{"sample":"HGDP00776.DG","pop":"Han.DG","pcs":[-0.0602,-0.0257,0.0004,-0.0009,0.0063,-0.0014,-0.0002,-0.0129,0.0014,-0.0003]},{"sample":"HGDP00777.DG","pop":"Han.DG","pcs":[-0.0598,-0.0224,0.0002,-0.002,-0.0016,-0.0006,0.0012,-0.0111,0.0012,-0.0008]},{"sample":"HGDP00778.DG","pop":"Han.DG","pcs":[-0.0623,-0.0252,0.001,-0.0011,0.0086,-0.0011,0.0002,-0.017,-0.0077,0.0025]},{"sample":"HGDP00779.DG","pop":"Han.DG","pcs":[-0.0604,-0.0238,-0.0002,-0.0032,-0.0034,-0.0003,0.0004,-0.0118,0.0012,0.0]},{"sample":"HGDP00780.DG","pop":"Han.DG","pcs":[-0.0616,-0.0234,0.0007,0.0011,-0.0003,-0.0007,-0.0007,-0.0109,0.0019,0.0003]},{"sample":"HGDP00781.DG","pop":"Han.DG","pcs":[-0.0606,-0.0248,0.0005,-0.0009,0.0015,-0.0013,-0.0005,-0.0128,0.0014,-0.0014]},{"sample":"HGDP00782.DG","pop":"Han.DG","pcs":[-0.0607,-0.0241,-0.0008,-0.0017,0.0075,-0.0001,0.0001,-0.0104,0.0015,-0.0011]},{"sample":"HGDP00783.DG","pop":"Han.DG","pcs":[-0.069,-0.0324,-0.0009,-0.0022,-0.0698,0.6856,0.1434,0.0305,-0.0117,-0.0125]},{"sample":"HGDP00784.DG","pop":"Han.DG","pcs":[-0.0605,-0.0238,-0.0006,-0.0013,-0.0075,-0.0004,-0.0001,-0.0112,0.0008,-0.0005]},{"sample":"HGDP00785.DG","pop":"Han.DG","pcs":[-0.0689,-0.0336,-0.0017,-0.0009,0.0418,-0.1506,0.6395,-0.0758,0.2649,-0.0148]},{"sample":"HGDP00786.DG","pop":"Han.DG","pcs":[-0.0605,-0.0263,0.0,-0.0009,-0.0025,-0.001,-0.0003,-0.0104,0.0037,-0.002]},{"sample":"HGDP00811.DG","pop":"Han.DG","pcs":[-0.0612,-0.0273,0.0001,-0.0012,-0.0014,-0.0006,-0.0,-0.016,0.0019,-0.0002]},{"sample":"HGDP00812.DG","pop":"Han.DG","pcs":[-0.0585,-0.0242,0.0002,-0.0019,0.0129,-0.0015,-0.0008,-0.0126,0.002,-0.0005]},{"sample":"HGDP00813.DG","pop":"Han.DG","pcs":[-0.0605,-0.0266,-0.0003,-0.0008,-0.0127,-0.0012,-0.0002,-0.0144,0.002,-0.0012]},{"sample":"HGDP00814.DG","pop":"Han.DG","pcs":[-0.0594,-0.0247,-0.0014,-0.0001,-0.0005,-0.0001,0.0007,-0.0129,0.0007,-0.0009]},{"sample":"HGDP00815.DG","pop":"Han.DG","pcs":[-0.0613,-0.0248,0.0015,-0.0021,0.0017,-0.0007,0.0004,-0.0102,0.0035,-0.0005]},{"sample":"HGDP00817.DG","pop":"Han.DG","pcs":[-0.0607,-0.024,0.0003,-0.0016,0.0123,-0.001,-0.0002,-0.0115,0.0009,-0.0007]},{"sample":"HGDP00818.DG","pop":"Han.DG","pcs":[-0.0592,-0.0262,0.0016,-0.0013,-0.001,-0.0008,-0.0,-0.0078,0.0038,-0.0027]},{"sample":"HGDP00819.DG","pop":"Han.DG","pcs":[-0.0608,-0.0258,0.0,-0.0017,0.0142,-0.0008,-0.0002,-0.0093,0.0021,0.0027]},{"sample":"HGDP00820.DG","pop":"Han.DG","pcs":[-0.06,-0.025,-0.0005,-0.0014,-0.0046,-0.001,-0.001,-0.0104,0.0027,-0.0005]},{"sample":"HGDP00821.DG","pop":"Han.DG","pcs":[-0.058,-0.0251,-0.0001,-0.0009,0.0008,-0.0009,-0.0001,-0.0115,0.0029,-0.001]},{"sample":"HGDP00822.DG","pop":"Han.DG","pcs":[-0.0615,-0.0255,-0.0005,-0.0029,0.0093,-0.0007,0.0005,-0.0109,0.002,-0.0018]},{"sample":"HGDP00971.DG","pop":"Han.DG","pcs":[-0.0601,-0.0241,-0.0007,-0.0001,0.0082,-0.0005,0.0003,-0.0123,0.0015,-0.0007]},{"sample":"HGDP00972.DG","pop":"Han.DG","pcs":[-0.0615,-0.026,-0.0011,-0.0015,-0.0,-0.0004,0.0006,-0.0113,0.0023,-0.0013]},{"sample":"HGDP00973.DG","pop":"Han.DG","pcs":[-0.06,-0.0265,0.0004,-0.0026,-0.0063,-0.0006,-0.0,-0.0096,0.0013,0.0011]},{"sample":"HGDP00974.DG","pop":"Han.DG","pcs":[-0.0598,-0.0249,-0.0001,-0.001,0.004,-0.0005,-0.0,-0.0112,0.0023,-0.0007]},{"sample":"HGDP00975.DG","pop":"Han.DG","pcs":[-0.0593,-0.0253,-0.0002,-0.001,0.0077,-0.0008,-0.0004,-0.0099,0.0028,-0.0015]},{"sample":"HGDP00976.DG","pop":"Han.DG","pcs":[-0.0613,-0.0254,0.0003,-0.0009,0.0026,-0.0005,0.0002,-0.0114,0.0025,-0.0014]},{"sample":"HGDP00977.DG","pop":"Han.DG","pcs":[-0.0608,-0.0256,0.0001,-0.0012,-0.0018,-0.0004,0.0002,-0.0149,0.0015,-0.0006]},{"sample":"HGDP01021.DG","pop":"Han.DG","pcs":[-0.0605,-0.026,0.0006,-0.002,0.0075,-0.0006,0.0001,-0.0125,0.0025,-0.001]},{"sample":"HGDP01023.DG","pop":"Han.DG","pcs":[-0.0605,-0.0238,0.0008,-0.0002,0.0049,-0.0003,0.0001,-0.0114,0.0034,-0.0017]},{"sample":"HGDP01287.DG","pop":"Han.DG","pcs":[-0.0606,-0.0217,-0.0004,0.0001,-0.0002,-0.0004,0.0002,-0.0146,0.0005,0.0002]},{"sample":"HGDP01288.DG","pop":"Han.DG","pcs":[-0.0592,-0.0215,-0.001,-0.0004,0.0023,-0.0001,0.0006,-0.0093,0.0026,-0.0007]},{"sample":"HGDP01289.DG","pop":"Han.DG","pcs":[-0.0605,-0.022,0.0005,-0.0017,-0.0093,0.0003,0.0001,-0.0131,0.0021,-0.0028]},{"sample":"HGDP01290.DG","pop":"Han.DG","pcs":[-0.0599,-0.021,0.0006,-0.0016,-0.0012,-0.0007,0.0008,-0.0101,0.0015,0.0002]},{"sample":"HGDP01291.DG","pop":"Han.DG","pcs":[-0.0601,-0.0218,-0.0,0.0,-0.0044,-0.0003,0.0008,-0.013,0.0019,-0.0002]},{"sample":"HGDP01292.DG","pop":"Han.DG","pcs":[-0.0598,-0.0228,-0.0003,0.0001,0.0043,-0.0,0.0003,-0.0125,0.0016,0.0003]},{"sample":"HGDP01293.DG","pop":"Han.DG","pcs":[-0.0592,-0.0214,0.0002,0.0003,0.016,-0.0008,0.0004,-0.0131,0.0013,-0.0002]},{"sample":"HGDP01294.DG","pop":"Han.DG","pcs":[-0.06,-0.0223,0.0011,-0.0005,0.0071,-0.0001,0.0003,-0.0092,0.0032,-0.0027]},{"sample":"HGDP01295.DG","pop":"Han.DG","pcs":[-0.0591,-0.0209,0.0001,0.0001,-0.0145,-0.0005,0.0,-0.0174,0.0004,-0.0003]},{"sample":"HGDP01296.DG","pop":"Han.DG","pcs":[-0.0589,-0.0207,-0.0009,0.0006,-0.0062,-0.0004,0.0002,-0.0087,0.0016,-0.0003]},{"sample":"S_Han-1.DG","pop":"Han.DG","pcs":[-0.0692,-0.0323,-0.0009,-0.002,-0.071,0.6958,0.1366,0.0021,0.0058,-0.0169]},{"sample":"S_Han-2.DG","pop":"Han.DG","pcs":[-0.0689,-0.0335,-0.0017,-0.0008,0.0427,-0.149,0.6387,-0.096,0.309,-0.0186]},{"sample":"B_Papuan-15.DG","pop":"Papuan.DG","pcs":[0.1149,-0.0024,0.001,0.0008,0.3123,-0.0007,0.0008,0.0046,-0.0015,0.0003]},{"sample":"HGDP00540.DG","pop":"Papuan.DG","pcs":[0.1177,-0.0027,0.0007,-0.0012,0.3179,-0.0012,0.0001,0.0035,-0.0016,-0.027]},{"sample":"HGDP00541.DG","pop":"Papuan.DG","pcs":[0.1097,-0.0024,0.0001,-0.0009,0.0167,0.002,-0.0047,-0.0464,0.0416,-0.0396]},{"sample":"HGDP00542.DG","pop":"Papuan.DG","pcs":[0.1057,-0.0011,0.0011,0.0004,0.1807,-0.0003,0.0004,0.0006,0.0004,-0.0001]},{"sample":"HGDP00543.DG","pop":"Papuan.DG","pcs":[0.1114,-0.0021,0.0,0.0009,0.0478,0.0011,-0.0031,-0.043,0.0388,0.0259]},{"sample":"HGDP00544.DG","pop":"Papuan.DG","pcs":[0.0664,-0.0047,-0.0011,0.0005,0.0442,-0.0005,-0.0005,-0.0004,0.0006,-0.0014]},{"sample":"HGDP00545.DG","pop":"Papuan.DG","pcs":[0.1141,-0.0012,0.0019,-0.0008,0.2574,-0.0004,-0.0002,0.001,-0.008,-0.0116]},{"sample":"HGDP00546.DG","pop":"Papuan.DG","pcs":[0.1152,-0.0018,0.001,0.0007,0.3149,-0.0008,0.0008,0.0002,0.001,-0.0004]},{"sample":"HGDP00547.DG","pop":"Papuan.DG","pcs":[0.114,-0.0032,0.0016,-0.0004,0.25,-0.0006,0.0001,-0.0004,0.0006,-0.0034]},{"sample":"HGDP00548.DG","pop":"Papuan.DG","pcs":[0.1142,-0.0029,-0.0012,0.0005,-0.116,-0.0003,-0.0001,-0.011,0.0009,0.0056]},{"sample":"HGDP00549.DG","pop":"Papuan.DG","pcs":[0.1151,-0.0024,0.001,-0.0005,-0.1303,-0.0001,0.0002,-0.0007,-0.001,0.0091]},{"sample":"HGDP00550.DG","pop":"Papuan.DG","pcs":[0.1133,-0.002,-0.0014,0.0008,-0.1204,0.0002,0.0005,-0.0061,0.003,-0.0015]},{"sample":"HGDP00551.DG","pop":"Papuan.DG","pcs":[0.1137,-0.0025,-0.001,-0.0007,-0.1113,-0.0005,0.0003,0.0016,-0.0059,0.0008]},{"sample":"HGDP00552.DG","pop":"Papuan.DG","pcs":[0.1162,-0.0023,0.0001,-0.0004,-0.1608,0.0001,-0.0,-0.0008,-0.0055,0.001]},{"sample":"HGDP00553.DG","pop":"Papuan.DG","pcs":[0.1127,-0.0023,-0.0009,-0.0017,-0.1054,0.0004,-0.0004,0.0008,0.0075,0.0081]},{"sample":"HGDP00554.DG","pop":"Papuan.DG","pcs":[0.1149,-0.0016,0.0004,-0.0011,-0.1387,-0.0,0.0005,-0.0081,0.0094,-0.0053]},{"sample":"HGDP00555.DG","pop":"Papuan.DG","pcs":[0.1149,-0.0008,-0.0013,-0.0003,-0.1299,0.0001,0.0001,0.0004,-0.0091,-0.0019]},{"sample":"HGDP00556.DG","pop":"Papuan.DG","pcs":[0.1134,-0.0015,-0.0011,-0.0004,-0.0673,0.0007,0.0013,0.0177,0.0144,0.0158]},{"sample":"S_Papuan-10.DG","pop":"Papuan.DG","pcs":[0.1122,-0.0029,-0.0009,-0.0018,-0.1027,0.0006,-0.0004,0.0056,0.005,0.0089]},{"sample":"S_Papuan-11.DG","pop":"Papuan.DG","pcs":[0.1144,-0.0014,-0.0014,-0.0002,-0.1273,0.0002,0.0001,0.0044,-0.0113,-0.0008]},{"sample":"S_Papuan-12.DG","pop":"Papuan.DG","pcs":[0.113,-0.002,-0.0011,-0.0005,-0.0654,0.0008,0.0013,0.0225,0.0121,0.0171]},{"sample":"S_Papuan-13.DG","pop":"Papuan.DG","pcs":[0.1158,-0.0029,0.0,-0.0005,-0.1584,0.0002,-0.0001,0.0027,-0.0074,0.0017]},{"sample":"S_Papuan-14.DG","pop":"Papuan.DG","pcs":[0.1145,-0.0021,0.0004,-0.0011,-0.1359,0.0001,0.0005,-0.0045,0.0073,-0.0046]},{"sample":"S_Papuan-1.DG","pop":"Papuan.DG","pcs":[0.1128,-0.0025,-0.0015,0.0008,-0.1175,0.0003,0.0005,-0.002,0.0008,-0.0006]},{"sample":"S_Papuan-2.DG","pop":"Papuan.DG","pcs":[0.1172,-0.0034,0.0007,-0.0011,0.3149,-0.0011,0.0001,0.0089,-0.0047,-0.0264]},{"sample":"S_Papuan-3.DG","pop":"Papuan.DG","pcs":[0.1092,-0.003,0.0001,-0.0009,0.0135,0.0022,-0.0049,-0.0362,0.0355,-0.0375]},{"sample":"S_Papuan-4.DG","pop":"Papuan.DG","pcs":[0.1111,-0.0026,0.0,0.0009,0.0452,0.0013,-0.0032,-0.0358,0.0338,0.0276]},{"sample":"S_Papuan-5.DG","pop":"Papuan.DG","pcs":[0.1137,-0.0018,0.002,-0.0008,0.2538,-0.0003,-0.0002,0.0051,-0.0102,-0.0113]},{"sample":"S_Papuan-6.DG","pop":"Papuan.DG","pcs":[0.1136,-0.0038,0.0016,-0.0004,0.2467,-0.0006,0.0001,0.0029,-0.0013,-0.0029]},{"sample":"S_Papuan-7.DG","pop":"Papuan.DG","pcs":[0.1138,-0.0034,-0.0012,0.0004,-0.113,-0.0002,-0.0001,-0.0066,-0.0017,0.0063]},{"sample":"S_Papuan-8.DG","pop":"Papuan.DG","pcs":[0.1148,-0.003,0.001,-0.0005,-0.1279,0.0,0.0002,0.0032,-0.003,0.0101]},{"sample":"S_Papuan-9.DG","pop":"Papuan.DG","pcs":[0.1133,-0.003,-0.001,-0.0006,-0.108,-0.0004,0.0003,0.0058,-0.0085,0.0017]},{"sample":"HGDP00052.DG","pop":"Balochi.DG","pcs":[-0.0432,0.0685,-0.0,0.0312,-0.0038,0.0005,0.0007,-0.0019,0.0009,0.0013]},{"sample":"HGDP00054.DG","pop":"Balochi.DG","pcs":[-0.0449,0.0714,-0.0,0.0301,-0.0048,0.0002,0.0,-0.0033,0.0031,-0.0002]},{"sample":"HGDP00056.DG","pop":"Balochi.DG","pcs":[-0.042,0.0617,0.0004,0.0252,0.0084,-0.0002,-0.0004,-0.0043,0.0028,0.0027]},{"sample":"HGDP00057.DG","pop":"Balochi.DG","pcs":[-0.0418,0.0669,-0.0021,0.0302,-0.0024,0.0001,0.0001,-0.0039,-0.0024,-0.0054]},{"sample":"HGDP00058.DG","pop":"Balochi.DG","pcs":[-0.0423,0.0655,-0.001,0.0297,0.0144,-0.0001,0.0005,0.0011,0.0054,-0.0034]},{"sample":"HGDP00060.DG","pop":"Balochi.DG","pcs":[-0.0412,0.0674,0.0012,0.0299,0.0187,-0.0002,0.0004,-0.0042,0.0018,0.0018]},{"sample":"HGDP00062.DG","pop":"Balochi.DG","pcs":[-0.0421,0.0695,0.0016,0.0299,-0.0018,0.0005,0.0002,-0.0049,0.0028,0.0017]},{"sample":"HGDP00064.DG","pop":"Balochi.DG","pcs":[-0.0447,0.0695,-0.0015,0.0306,0.0152,0.0,0.0001,-0.0022,0.0005,-0.003]},{"sample":"HGDP00066.DG","pop":"Balochi.DG","pcs":[-0.0439,0.069,-0.001,0.03,-0.0011,0.0005,0.0007,-0.005,-0.0008,0.0049]},{"sample":"HGDP00068.DG","pop":"Balochi.DG","pcs":[-0.0441,0.0632,-0.0003,0.0262,0.0058,-0.0,0.0005,-0.0032,0.0036,-0.0001]},{"sample":"HGDP00070.DG","pop":"Balochi.DG","pcs":[-0.0393,0.0506,0.0001,0.0238,0.0033,-0.0,-0.0004,-0.0059,0.0054,-0.0014]},{"sample":"HGDP00074.DG","pop":"Balochi.DG","pcs":[-0.0442,0.0688,0.0005,0.0294,-0.0089,-0.0002,-0.0,-0.0002,0.006,-0.0032]},{"sample":"HGDP00076.DG","pop":"Balochi.DG","pcs":[-0.0427,0.0684,-0.0005,0.0292,-0.0029,-0.0,0.0,-0.0045,0.0006,-0.0042]},{"sample":"HGDP00078.DG","pop":"Balochi.DG","pcs":[-0.0453,0.0699,-0.0007,0.0289,0.0052,-0.0001,0.0003,-0.0026,0.0041,-0.0064]},{"sample":"HGDP00080.DG","pop":"Balochi.DG","pcs":[-0.0454,0.0685,0.0006,0.0308,0.0045,-0.0001,-0.0,-0.0013,-0.0001,-0.002]},{"sample":"HGDP00082.DG","pop":"Balochi.DG","pcs":[-0.0432,0.0685,0.0006,0.0302,-0.0097,0.0004,0.0001,0.0016,0.0026,-0.0023]},{"sample":"HGDP00086.DG","pop":"Balochi.DG","pcs":[-0.0441,0.0689,0.0002,0.0299,0.005,-0.0,-0.0,-0.0039,0.0018,-0.004]},{"sample":"HGDP00088.DG","pop":"Balochi.DG","pcs":[-0.0449,0.0679,-0.0019,0.0297,0.0049,-0.0002,0.0003,-0.0021,0.0042,-0.0031]},{"sample":"HGDP00090.DG","pop":"Balochi.DG","pcs":[-0.044,0.0653,-0.001,0.0254,0.0172,0.0001,0.0004,-0.006,0.0043,0.006]},{"sample":"HGDP00092.DG","pop":"Balochi.DG","pcs":[-0.0423,0.0646,-0.0026,0.0299,-0.0001,-0.0002,0.0009,-0.0024,-0.0024,0.0028]},{"sample":"HGDP00094.DG","pop":"Balochi.DG","pcs":[-0.0437,0.0675,0.0019,0.0279,0.0135,-0.0003,0.0,-0.0023,0.0048,-0.0016]},{"sample":"HGDP00096.DG","pop":"Balochi.DG","pcs":[-0.0447,0.0675,0.0001,0.029,0.0147,0.0001,0.0001,-0.0032,0.0002,0.0016]},{"sample":"HGDP00098.DG","pop":"Balochi.DG","pcs":[-0.0433,0.0669,-0.0023,0.0275,-0.0009,0.0005,-0.0001,-0.001,0.0002,0.0026]},{"sample":"HGDP00183.DG","pop":"Balochi.DG","pcs":[-0.0406,0.0589,0.001,0.0261,0.0016,-0.0002,0.0004,-0.0011,0.0053,-0.0019]},{"sample":"HGDP00274.DG","pop":"Kalash.DG","pcs":[-0.0445,0.0636,-0.0019,0.0282,0.0172,0.0,0.0003,-0.0058,0.0013,-0.0009]},{"sample":"HGDP00277.DG","pop":"Kalash.DG","pcs":[-0.0441,0.0652,-0.0009,0.0281,-0.0004,-0.0,-0.0001,-0.0045,0.0011,0.0039]},{"sample":"HGDP00279.DG","pop":"Kalash.DG","pcs":[-0.0429,0.0635,-0.0,0.0265,0.0114,-0.0002,0.0003,-0.0024,0.003,-0.0008]},{"sample":"HGDP00281.DG","pop":"Kalash.DG","pcs":[-0.0442,0.066,0.0012,0.0294,-0.0018,-0.0002,-0.0,-0.0033,0.0041,-0.0005]},{"sample":"HGDP00285.DG","pop":"Kalash.DG","pcs":[-0.0445,0.0656,-0.0007,0.0287,0.001,0.0003,-0.0001,-0.0042,-0.0017,-0.0005]},{"sample":"HGDP00286.DG","pop":"Kalash.DG","pcs":[-0.0432,0.0652,-0.0005,0.0276,-0.0042,0.0002,0.0004,-0.0033,0.0053,-0.0027]},{"sample":"HGDP00288.DG","pop":"Kalash.DG","pcs":[-0.0418,0.0653,-0.0008,0.0279,-0.0012,0.0002,-0.0003,-0.0048,0.004,0.0009]},{"sample":"HGDP00290.DG","pop":"Kalash.DG","pcs":[-0.0442,0.0646,0.0003,0.0274,-0.0097,0.0006,0.0002,-0.0031,0.0019,-0.0037]},{"sample":"HGDP00298.DG","pop":"Kalash.DG","pcs":[-0.0443,0.0647,-0.001,0.0275,0.0007,0.0004,0.0006,-0.0022,0.0085,0.0012]},{"sample":"HGDP00302.DG","pop":"Kalash.DG","pcs":[-0.0435,0.0645,0.0002,0.0277,-0.0128,0.0002,0.0,-0.0024,0.0047,-0.0045]},{"sample":"HGDP00304.DG","pop":"Kalash.DG","pcs":[-0.0423,0.0645,-0.0023,0.0302,-0.0039,0.0004,0.0003,-0.0013,0.0033,0.0015]},{"sample":"HGDP00307.DG","pop":"Kalash.DG","pcs":[-0.0445,0.0658,-0.0017,0.0296,0.0169,0.0009,0.0005,-0.0035,0.0039,-0.0022]},{"sample":"HGDP00309.DG","pop":"Kalash.DG","pcs":[-0.0432,0.065,-0.0007,0.0291,0.0029,-0.0004,0.0009,-0.0028,0.0027,0.0007]},{"sample":"HGDP00311.DG","pop":"Kalash.DG","pcs":[-0.0434,0.0644,-0.0011,0.0284,0.004,0.0002,-0.0001,-0.0012,-0.0006,0.0012]},{"sample":"HGDP00313.DG","pop":"Kalash.DG","pcs":[-0.0438,0.0638,-0.0014,0.0285,0.0041,-0.0001,-0.0,-0.0027,0.0056,0.0036]},{"sample":"HGDP00315.DG","pop":"Kalash.DG","pcs":[-0.0435,0.0641,-0.001,0.027,0.0048,-0.0002,0.0001,-0.0029,0.0052,0.0024]},{"sample":"HGDP00319.DG","pop":"Kalash.DG","pcs":[-0.0451,0.0651,-0.0017,0.0289,0.0042,0.0001,-0.0004,-0.0036,0.0065,0.0022]},{"sample":"HGDP00323.DG","pop":"Kalash.DG","pcs":[-0.0442,0.0668,-0.0021,0.0305,-0.0035,-0.0,0.0006,-0.0024,0.0053,-0.0025]},{"sample":"HGDP00326.DG","pop":"Kalash.DG","pcs":[-0.0445,0.0647,-0.0005,0.0281,0.0014,0.0003,0.0003,-0.0043,0.0035,-0.0073]},{"sample":"HGDP00328.DG","pop":"Kalash.DG","pcs":[-0.0448,0.0651,-0.0014,0.0289,0.0052,0.0001,0.0005,-0.0033,0.0068,-0.0029]},{"sample":"HGDP00330.DG","pop":"Kalash.DG","pcs":[-0.0437,0.0651,-0.0022,0.0299,0.0067,0.0,0.0003,-0.0042,-0.0012,-0.0077]},{"sample":"HGDP00333.DG","pop":"Kalash.DG","pcs":[-0.0433,0.0659,-0.0005,0.027,-0.0045,0.0,-0.0003,-0.0036,0.0059,0.0002]},{"sample":"HGDP00213.DG","pop":"Pathan.DG","pcs":[-0.0438,0.0655,0.0009,0.0266,-0.0025,0.0001,0.0001,-0.0058,-0.0028,0.0051]},{"sample":"HGDP00214.DG","pop":"Pathan.DG","pcs":[-0.047,0.0669,-0.0003,0.0271,-0.0037,0.0002,-0.0004,-0.0023,-0.0004,0.0021]},{"sample":"HGDP00216.DG","pop":"Pathan.DG","pcs":[-0.0424,0.0612,0.0004,0.0284,0.0112,0.0003,-0.0002,-0.0019,0.0024,-0.0012]},{"sample":"HGDP00218.DG","pop":"Pathan.DG","pcs":[-0.0443,0.0652,-0.002,0.028,0.016,0.0001,0.0006,-0.0036,0.0046,0.0043]},{"sample":"HGDP00222.DG","pop":"Pathan.DG","pcs":[-0.0421,0.0623,-0.0004,0.0282,0.0047,-0.0002,-0.0004,-0.0027,0.001,-0.0022]},{"sample":"HGDP00224.DG","pop":"Pathan.DG","pcs":[-0.0439,0.0635,0.0001,0.0286,-0.0033,0.0001,0.0001,-0.0019,0.003,0.0027]},{"sample":"HGDP00226.DG","pop":"Pathan.DG","pcs":[-0.0432,0.0632,0.0006,0.0277,0.0095,0.0004,-0.0,-0.0027,0.0007,-0.001]},{"sample":"HGDP00228.DG","pop":"Pathan.DG","pcs":[-0.043,0.062,0.0011,0.0264,-0.0064,-0.0001,0.0001,-0.0037,0.0022,-0.0044]},{"sample":"HGDP00230.DG","pop":"Pathan.DG","pcs":[-0.0422,0.0623,-0.0,0.0273,-0.0086,0.0002,-0.0002,-0.0013,0.0034,-0.0038]},{"sample":"HGDP00232.DG","pop":"Pathan.DG","pcs":[-0.0439,0.0631,0.0011,0.0262,0.0092,0.0001,0.0003,-0.0021,0.006,0.0007]},{"sample":"HGDP00234.DG","pop":"Pathan.DG","pcs":[-0.0433,0.061,0.0002,0.0265,0.0019,-0.0001,-0.0001,-0.003,0.0037,-0.0005]},{"sample":"HGDP00237.DG","pop":"Pathan.DG","pcs":[-0.041,0.0561,-0.0006,0.0245,0.0187,-0.0001,-0.0001,-0.0052,0.0029,-0.0067]},{"sample":"HGDP00239.DG","pop":"Pathan.DG","pcs":[-0.0403,0.056,0.0008,0.0271,0.0178,-0.0002,0.0002,-0.004,0.0029,0.0033]},{"sample":"HGDP00241.DG","pop":"Pathan.DG","pcs":[-0.0439,0.0652,-0.0001,0.0296,0.0061,-0.0003,0.0002,-0.005,-0.0001,-0.0033]},{"sample":"HGDP00243.DG","pop":"Pathan.DG","pcs":[-0.0461,0.0676,0.001,0.0284,0.0111,0.0002,0.0004,-0.0023,-0.004,0.0004]},{"sample":"HGDP00244.DG","pop":"Pathan.DG","pcs":[-0.0438,0.0624,0.0018,0.0284,0.0005,-0.0006,-0.0002,-0.0029,-0.0005,-0.0008]},{"sample":"HGDP00247.DG","pop":"Pathan.DG","pcs":[-0.0431,0.0618,0.0014,0.0263,-0.0003,0.0001,0.0002,-0.0041,-0.0009,-0.0]},{"sample":"HGDP00248.DG","pop":"Pathan.DG","pcs":[-0.0409,0.0616,-0.0004,0.0256,0.0137,-0.0001,0.0006,-0.0026,-0.0018,0.0005]},{"sample":"HGDP00251.DG","pop":"Pathan.DG","pcs":[-0.0437,0.0628,-0.001,0.0279,0.003,0.0003,0.0004,-0.0017,0.0055,0.0007]},{"sample":"HGDP00254.DG","pop":"Pathan.DG","pcs":[-0.045,0.0649,0.0,0.0285,0.0035,0.0001,0.0004,-0.0025,0.0048,0.0037]},{"sample":"HGDP00258.DG","pop":"Pathan.DG","pcs":[-0.042,0.0587,-0.0005,0.0261,-0.0041,0.0004,0.0004,-0.0037,-0.0016,-0.0036]},{"sample":"HGDP00259.DG","pop":"Pathan.DG","pcs":[-0.0451,0.0658,0.0012,0.0293,0.0019,-0.0,0.0002,-0.0053,-0.0011,-0.003]},{"sample":"HGDP00262.DG","pop":"Pathan.DG","pcs":[-0.0433,0.0635,-0.0013,0.0271,0.0003,0.0001,-0.0006,-0.0058,0.0018,0.0038]},{"sample":"HGDP00264.DG","pop":"Pathan.DG","pcs":[-0.0439,0.0606,-0.0001,0.028,-0.0003,0.0001,-0.0001,-0.0011,0.0036,0.0004]},{"sample":"HGDP00167.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.041,0.0591,0.0011,0.0264,0.0053,-0.0001,-0.0001,-0.0015,0.0015,-0.0042]},{"sample":"HGDP00169.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0401,0.0579,-0.0006,0.0265,0.0145,0.0002,0.0002,-0.0045,-0.0016,-0.0021]},{"sample":"HGDP00171.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0406,0.0592,-0.0008,0.0255,0.0199,0.0002,0.0001,-0.0023,0.0008,-0.002]},{"sample":"HGDP00179.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0414,0.0612,-0.0013,0.0293,0.0155,0.0,0.0005,-0.001,0.0005,-0.0032]},{"sample":"HGDP00181.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0423,0.0595,0.0003,0.0297,0.0155,-0.0001,0.0006,-0.0055,0.0007,0.002]},{"sample":"HGDP00185.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0417,0.0622,0.0016,0.0274,0.0049,0.0002,0.0002,-0.0044,0.0027,0.0012]},{"sample":"HGDP00187.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0432,0.0597,-0.001,0.0265,0.0125,-0.0,-0.0,-0.0005,-0.0008,-0.0024]},{"sample":"HGDP00189.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0406,0.0601,0.0011,0.0284,-0.0029,0.0005,0.0004,-0.003,0.0044,-0.0057]},{"sample":"HGDP00191.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0429,0.0603,-0.0015,0.0283,0.0034,-0.0002,0.0002,-0.0004,0.0044,0.0015]},{"sample":"HGDP00192.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0423,0.0598,-0.0015,0.0247,0.0186,-0.0004,-0.0009,-0.0053,-0.0009,0.002]},{"sample":"HGDP00195.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0412,0.0564,-0.0013,0.0269,0.0022,-0.0002,0.0002,-0.004,0.0026,-0.0004]},{"sample":"HGDP00197.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0422,0.0596,-0.001,0.0277,0.0081,-0.0,0.0005,-0.0015,-0.0006,-0.0004]},{"sample":"HGDP00201.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0418,0.0614,0.0009,0.0253,0.0178,0.0005,0.0001,-0.0036,-0.0004,-0.0056]},{"sample":"HGDP00205.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0423,0.0618,0.0012,0.0266,0.0188,-0.0001,0.0003,-0.0058,0.0005,0.0006]},{"sample":"HGDP00206.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0414,0.0557,-0.0008,0.0255,0.0098,0.0001,0.0002,-0.0029,-0.0018,-0.0002]},{"sample":"HGDP00208.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0413,0.0603,0.0007,0.0258,0.0187,0.0004,0.0001,-0.0048,0.0001,0.0011]},{"sample":"HGDP00210.DG","pop":"Sindhi_Pakistan.DG","pcs":[-0.0425,0.0597,0.0014,0.0253,-0.0011,0.0004,0.0,-0.0029,0.0022,0.0036]},{"sample":"stockplate3_E10","pop":"Brahmin_Haryana","pcs":[-0.0424,0.059,-0.0,0.0228,0.0177,0.0002,-0.0004,-0.0021,-0.0003,0.0004]},{"sample":"stockplate3_E11","pop":"Brahmin_Haryana","pcs":[-0.0417,0.0562,-0.0028,0.0253,-0.0002,-0.0002,-0.0001,-0.0034,0.0041,-0.005]},{"sample":"stockplate3_F2","pop":"Brahmin_Haryana","pcs":[-0.042,0.0599,0.0009,0.0244,0.0054,-0.0001,-0.0003,-0.0001,0.0014,0.0011]},{"sample":"stockplate3_H9","pop":"Gujjar","pcs":[-0.0408,0.0584,-0.002,0.023,0.005,-0.0001,0.0004,-0.0002,-0.0016,0.0028]},{"sample":"stockplate3_H10","pop":"Gujjar","pcs":[-0.0415,0.0616,-0.002,0.0267,0.0039,-0.0001,0.0003,-0.0043,0.0031,0.0055]},{"sample":"stockplate3_H11","pop":"Gujjar","pcs":[-0.0414,0.0619,-0.0009,0.0249,-0.0014,0.0003,0.0002,-0.0034,-0.0026,-0.0013]},{"sample":"stockplate3_H12","pop":"Gujjar","pcs":[-0.042,0.0597,-0.0009,0.026,0.0113,-0.0,0.0002,-0.0014,-0.0007,0.0049]},{"sample":"stockplate13_C7","pop":"Meena","pcs":[-0.0363,0.0459,0.0011,0.0209,-0.0012,0.0002,-0.0009,-0.0037,0.0029,-0.0034]},{"sample":"stockplate13_C8","pop":"Meena","pcs":[-0.0393,0.0522,-0.0001,0.0237,-0.0045,-0.0006,0.0003,-0.0019,0.0038,0.0039]},{"sample":"stockplate13_C9","pop":"Meena","pcs":[-0.0396,0.0552,-0.0006,0.0246,0.0105,0.0002,0.0003,-0.0033,-0.0005,-0.0023]},{"sample":"stockplate13_C10","pop":"Meena","pcs":[-0.0401,0.0546,-0.0003,0.0254,-0.0204,-0.0004,0.0004,-0.004,0.002,-0.0008]},{"sample":"stockplate13_C11","pop":"Meena","pcs":[-0.0352,0.0411,-0.0004,0.0178,0.0032,-0.0007,0.0005,-0.0042,0.002,0.0006]},{"sample":"stockplate4_A7","pop":"Muslim_Kashmiri","pcs":[-0.0435,0.0592,-0.0014,0.0252,0.0111,0.0003,0.0003,-0.0013,-0.0019,0.0008]},{"sample":"stockplate4_A8","pop":"Muslim_Kashmiri","pcs":[-0.043,0.057,-0.0009,0.0261,0.0135,0.0001,-0.0001,-0.0022,0.0012,-0.0014]},{"sample":"stockplate4_A10","pop":"Muslim_Kashmiri","pcs":[-0.0423,0.057,0.0012,0.0289,-0.0019,0.0002,0.0006,-0.0044,-0.0012,0.0012]},{"sample":"stockplate4_A11","pop":"Muslim_Kashmiri","pcs":[-0.0427,0.0584,0.0007,0.0246,-0.0035,0.0002,0.0001,-0.0035,-0.0008,-0.0058]},{"sample":"stockplate14_E3","pop":"Muslim_Kashmiri","pcs":[-0.0403,0.058,-0.0006,0.0261,0.0109,-0.0,0.0001,0.0016,0.0038,-0.0026]},{"sample":"stockplate14_E4","pop":"Muslim_Kashmiri","pcs":[-0.0406,0.0544,0.0021,0.026,0.0117,0.0003,0.0005,-0.0047,0.0112,-0.0042]},{"sample":"stockplate14_E5","pop":"Muslim_Kashmiri","pcs":[-0.0414,0.0529,0.0002,0.0207,0.0031,-0.0,-0.0001,-0.0053,0.0012,0.0031]},{"sample":"stockplate14_E6","pop":"Muslim_Kashmiri","pcs":[-0.042,0.0507,0.0012,0.0244,-0.011,-0.0001,-0.0,-0.0037,-0.0012,0.0002]},{"sample":"stockplate14_E7","pop":"Muslim_Kashmiri","pcs":[-0.0383,0.0473,-0.0003,0.0217,0.0162,-0.0005,0.0,-0.0021,0.0037,-0.0024]},{"sample":"stockplate14_D11","pop":"Rajput","pcs":[-0.0415,0.0566,0.0017,0.0249,0.0039,0.0001,0.0001,-0.0051,0.0035,0.0028]},{"sample":"stockplate14_D12","pop":"Rajput","pcs":[-0.0406,0.0534,-0.0018,0.0252,0.0135,-0.0001,-0.0,-0.0046,0.0024,0.0011]},{"sample":"stockplate14_E2","pop":"Rajput","pcs":[-0.0385,0.0529,-0.0,0.0236,0.0149,-0.0003,0.0004,-0.005,-0.0004,-0.0029]},{"sample":"stockplate1_G3","pop":"Reddy_Telangana","pcs":[-0.0372,0.0472,0.0019,0.0212,-0.0082,0.0001,-0.0004,0.0004,0.003,0.0002]},{"sample":"stockplate1_G4","pop":"Reddy_Telangana","pcs":[-0.0385,0.0459,0.0001,0.0209,0.0083,-0.0001,0.0001,-0.0023,0.0057,-0.0028]},{"sample":"stockplate1_G5","pop":"Reddy_Telangana","pcs":[-0.0358,0.0426,-0.0016,0.0195,0.0037,-0.0003,0.0002,-0.005,0.0068,-0.005]},{"sample":"stockplate1_G6","pop":"Reddy_Telangana","pcs":[-0.0372,0.0429,-0.0013,0.0219,0.0088,-0.0003,0.001,-0.0036,0.003,0.0002]},{"sample":"stockplate1_G8","pop":"Reddy_Telangana","pcs":[-0.0359,0.0424,0.0003,0.0211,0.0123,0.0001,0.0001,-0.0035,0.0028,0.0034]},{"sample":"stockplate1_G9","pop":"Reddy_Telangana","pcs":[-0.0359,0.0442,0.0023,0.0226,0.0096,0.0005,0.0,-0.0027,0.003,-0.0008]},{"sample":"stockplate1_G10","pop":"Reddy_Telangana","pcs":[-0.0345,0.0445,0.0011,0.0227,0.0201,0.0005,-0.0,0.0007,-0.0002,-0.004]},{"sample":"CCMB_PL_2_a1","pop":"Sikh_Jatt","pcs":[-0.0427,0.0604,-0.0025,0.0295,0.0045,-0.0004,0.0001,-0.0034,0.0013,-0.0016]},{"sample":"CCMB_PL_2_a2","pop":"Sikh_Jatt","pcs":[-0.0432,0.0633,0.0011,0.0288,0.0063,0.0002,-0.0011,-0.0031,0.0036,-0.0014]},{"sample":"CCMB_PL_2_a3","pop":"Sikh_Jatt","pcs":[-0.045,0.0633,-0.0004,0.0259,0.0095,-0.0006,0.0001,-0.0012,-0.0048,0.0025]},{"sample":"CCMB_PL_2_a4","pop":"Sikh_Jatt","pcs":[-0.0447,0.0633,0.0012,0.0268,0.0061,0.0,-0.0008,-0.0015,0.0029,-0.0016]},{"sample":"CCMB_PL_2_a5","pop":"Sikh_Jatt","pcs":[-0.0362,0.0426,-0.0003,0.0199,0.0077,-0.0005,0.0002,-0.0053,0.0068,0.0003]},{"sample":"CCMB_PL_2_a7","pop":"Sikh_Jatt","pcs":[-0.0427,0.0655,0.0032,0.029,0.0112,0.0001,0.0004,-0.0029,0.0008,-0.0009]},{"sample":"CCMB_PL_2_a9","pop":"Sikh_Jatt","pcs":[-0.0426,0.0625,-0.0012,0.0247,0.0038,-0.0005,0.0005,-0.0021,0.0031,0.0014]},{"sample":"CCMB_PL_2_a10","pop":"Sikh_Jatt","pcs":[-0.0383,0.047,-0.0004,0.0238,-0.0056,-0.0003,-0.0001,-0.0027,0.0003,-0.0044]},{"sample":"CCMB_PL_2_a11","pop":"Sikh_Jatt","pcs":[-0.0442,0.0645,0.0003,0.0289,0.019,-0.0004,0.0003,-0.0033,0.0045,0.001]},{"sample":"CCMB_PL_2_a12","pop":"Sikh_Jatt","pcs":[-0.0436,0.0638,-0.0013,0.0308,0.0042,-0.0002,0.0005,0.0003,0.0026,0.0005]},{"sample":"CCMB_PL_2_b1","pop":"Sikh_Jatt","pcs":[-0.0434,0.062,0.0008,0.0279,0.0105,-0.0005,0.0004,-0.0016,0.0028,-0.002]},{"sample":"CCMB_PL_2_b2","pop":"Sikh_Jatt","pcs":[-0.0426,0.0628,0.0011,0.0252,0.0106,0.0001,0.0003,-0.0002,0.0019,-0.0031]},{"sample":"CCMB_PL_2_b4","pop":"Sikh_Jatt","pcs":[-0.0432,0.0597,0.0001,0.0247,0.0164,0.0001,-0.0001,-0.0002,0.0016,0.0044]},{"sample":"CCMB_PL_2_b5","pop":"Sikh_Jatt","pcs":[-0.0406,0.0512,-0.0006,0.0239,-0.0047,-0.0005,-0.0,-0.0018,0.0015,-0.003]},{"sample":"CCMB_PL_2_b7","pop":"Sikh_Jatt","pcs":[-0.0428,0.0648,-0.0019,0.0299,0.0028,-0.0004,-0.0001,-0.0033,-0.0015,-0.005]},{"sample":"CCMB_PL_2_b9","pop":"Sikh_Jatt","pcs":[-0.0356,0.0423,0.002,0.0196,0.0078,-0.0005,-0.0001,-0.0048,0.003,0.0027]},{"sample":"CCMB_PL_2_b11","pop":"Sikh_Jatt","pcs":[-0.043,0.0577,0.0006,0.0216,0.0006,-0.0005,0.0002,0.0006,0.0009,-0.0014]},{"sample":"CCMB_PL_2_b12","pop":"Sikh_Jatt","pcs":[-0.0431,0.0646,-0.0013,0.0284,0.0097,0.0001,0.0002,0.0,0.0043,0.0023]},{"sample":"CCMB_PL_2_c2","pop":"Sikh_Jatt","pcs":[-0.043,0.0642,-0.0017,0.0291,0.0065,0.0001,0.0003,0.0,0.0068,-0.0009]},{"sample":"stockplate7_H2","pop":"Yadav_Rajasthan","pcs":[-0.0409,0.058,-0.0003,0.025,-0.0062,-0.0,0.0001,-0.0028,-0.0003,-0.0057]},{"sample":"stockplate7_H3","pop":"Yadav_Rajasthan","pcs":[-0.0399,0.0563,0.0004,0.0254,-0.0022,-0.0,0.0002,-0.0048,-0.0017,-0.0019]},{"sample":"stockplate7_H6","pop":"Yadav_Rajasthan","pcs":[-0.0425,0.0586,0.002,0.025,-0.0016,-0.0,0.0005,-0.0004,0.002,0.0012]},{"sample":"stockplate16_B7","pop":"Yadav_Rajasthan","pcs":[-0.0409,0.0586,-0.0006,0.023,0.0122,0.0005,0.0002,-0.0039,-0.0018,-0.0]},{"sample":"stockplate16_B8","pop":"Yadav_Rajasthan","pcs":[-0.0411,0.0581,-0.0013,0.0245,-0.0146,-0.0006,-0.0003,-0.0027,0.0022,0.0028]},{"sample":"stockplate9_B2","pop":"Yadav_UP","pcs":[-0.0384,0.0557,-0.0012,0.0248,0.0106,-0.0,0.0004,-0.0011,0.0054,-0.0015]},{"sample":"stockplate9_B3","pop":"Yadav_UP","pcs":[-0.0417,0.055,0.0007,0.0225,0.0074,0.0003,-0.0002,-0.0007,0.0026,-0.0013]},{"sample":"stockplate9_B4","pop":"Yadav_UP","pcs":[-0.0407,0.0559,0.0,0.0248,-0.0057,0.0004,0.0006,-0.0023,-0.0013,0.0026]},{"sample":"A253","pop":"Chamar_UP","pcs":[-0.0326,0.0252,0.0004,0.0141,0.0077,-0.0005,-0.0001,-0.0036,0.0021,-0.0038]},{"sample":"A259","pop":"Chamar_UP","pcs":[-0.0356,0.0397,-0.0008,0.0208,0.0222,-0.0003,-0.0,-0.0025,0.005,0.0012]},{"sample":"A260","pop":"Chamar_UP","pcs":[-0.036,0.0395,-0.0013,0.0197,0.0073,-0.0002,0.0001,-0.003,0.0015,0.0028]},{"sample":"A261","pop":"Chamar_UP","pcs":[-0.035,0.0397,0.002,0.0198,0.0063,-0.0005,-0.0001,-0.0014,0.0025,0.0023]},{"sample":"A266","pop":"Chamar_UP","pcs":[-0.0356,0.0393,-0.0009,0.0187,0.0043,-0.0005,0.0008,-0.0038,-0.0006,-0.0001]},{"sample":"A268","pop":"Chamar_UP","pcs":[-0.0352,0.0363,-0.0013,0.0173,0.0123,-0.0003,0.0001,-0.0036,0.0032,0.0006]},{"sample":"evo_40","pop":"Chamar_UP","pcs":[-0.0377,0.0465,0.0002,0.0206,0.0073,0.0001,0.0,-0.0048,-0.0024,0.0035]},{"sample":"evo_41","pop":"Chamar_UP","pcs":[-0.0332,0.039,-0.0008,0.0208,0.0059,-0.0002,0.0005,-0.0059,0.0005,-0.0017]},{"sample":"evo_42","pop":"Chamar_UP","pcs":[-0.0357,0.038,0.0011,0.0193,0.0109,-0.0003,0.0001,-0.0017,-0.0009,-0.0033]},{"sample":"evo_43","pop":"Chamar_UP","pcs":[-0.0363,0.0378,0.0016,0.0199,0.0173,0.0003,0.0001,-0.0026,0.0008,-0.0001]},{"sample":"GJ2","pop":"Gujjar_Rajasthan","pcs":[-0.0429,0.0576,0.0003,0.0258,-0.0007,0.0001,0.0004,-0.0008,0.0013,0.0001]},{"sample":"GJ16","pop":"Gujjar_Rajasthan","pcs":[-0.0417,0.0578,0.0,0.0261,0.002,0.0,0.0001,-0.0011,0.0065,0.0002]},{"sample":"GJ17","pop":"Gujjar_Rajasthan","pcs":[-0.0405,0.0578,-0.0001,0.0266,0.0119,0.0001,0.0,-0.0006,-0.0013,-0.0003]},{"sample":"GJ20","pop":"Gujjar_Rajasthan","pcs":[-0.0401,0.0561,-0.0003,0.024,-0.0018,0.0001,-0.0002,-0.0034,0.002,0.0043]},{"sample":"GJ21","pop":"Gujjar_Rajasthan","pcs":[-0.0414,0.0589,-0.0006,0.0253,0.0033,-0.0002,0.0006,-0.0016,0.0029,-0.0022]},{"sample":"GJ24","pop":"Gujjar_Rajasthan","pcs":[-0.0416,0.0575,0.0006,0.0237,0.0152,-0.0001,0.0003,-0.004,0.0009,-0.0044]},{"sample":"GJ27","pop":"Gujjar_Rajasthan","pcs":[-0.0401,0.0568,0.001,0.0261,0.0129,0.0004,0.0008,-0.0029,0.0036,0.002]},{"sample":"GJ30","pop":"Gujjar_Rajasthan","pcs":[-0.0412,0.0581,0.0004,0.0248,-0.0022,-0.0002,0.0002,-0.002,0.001,0.0028]},{"sample":"GJ32","pop":"Gujjar_Rajasthan","pcs":[-0.041,0.0588,-0.0025,0.0265,0.0187,0.0002,0.0004,-0.0011,0.0056,-0.0051]},{"sample":"GJ33","pop":"Gujjar_Rajasthan","pcs":[-0.0393,0.0572,0.0025,0.0249,0.0039,0.0001,-0.0002,-0.0015,0.0028,-0.0032]},{"sample":"GJ36","pop":"Gujjar_Rajasthan","pcs":[-0.0419,0.0581,-0.0008,0.0256,0.0115,-0.0003,0.0002,-0.0031,0.004,-0.0014]},{"sample":"GJ37","pop":"Gujjar_Rajasthan","pcs":[-0.0408,0.0573,0.0002,0.0289,0.0128,-0.0002,0.0003,-0.0007,-0.0,-0.0007]},{"sample":"GJ40","pop":"Gujjar_Rajasthan","pcs":[-0.0404,0.0565,0.0004,0.0237,0.0033,0.0001,0.0001,-0.0024,-0.0043,-0.0011]},{"sample":"GJ42","pop":"Gujjar_Rajasthan","pcs":[-0.0419,0.0575,-0.0001,0.0263,0.0047,0.0002,-0.0004,-0.0037,0.0026,-0.0062]},{"sample":"GJ43","pop":"Gujjar_Rajasthan","pcs":[-0.0406,0.0576,0.0005,0.0244,-0.0018,0.0001,0.0001,0.0009,-0.0001,-0.0046]},{"sample":"Jatt_Jt2","pop":"Jat_Hindu","pcs":[-0.0437,0.0646,0.0009,0.0299,-0.0121,-0.0003,-0.0002,-0.0024,0.0023,0.005]},{"sample":"KJ02","pop":"Kamboj_Rajasthan","pcs":[-0.0433,0.064,0.0005,0.0282,0.0061,0.0002,0.0004,-0.0009,-0.0026,-0.0033]},{"sample":"KJ03","pop":"Kamboj_Rajasthan","pcs":[-0.045,0.0631,-0.0017,0.027,-0.0022,0.0001,0.0005,-0.002,0.003,0.001]},{"sample":"KJ05","pop":"Kamboj_Rajasthan","pcs":[-0.0432,0.0616,-0.0019,0.0274,0.012,0.0,-0.0007,0.0013,-0.003,-0.0047]},{"sample":"KJ06","pop":"Kamboj_Rajasthan","pcs":[-0.0422,0.0583,-0.0017,0.0272,0.0205,-0.0002,0.0003,-0.0011,0.0025,-0.0014]},{"sample":"KJ09","pop":"Kamboj_Rajasthan","pcs":[-0.0425,0.0636,0.0015,0.0283,0.0072,0.0002,0.0002,0.0016,0.0037,0.0028]},{"sample":"KJ12","pop":"Kamboj_Rajasthan","pcs":[-0.0438,0.0641,-0.0021,0.0275,-0.0059,-0.0003,0.0002,0.0,0.0023,0.0027]},{"sample":"KJ27","pop":"Kamboj_Rajasthan","pcs":[-0.0435,0.0614,-0.0018,0.0256,0.0144,0.0001,0.0005,0.0009,0.0054,-0.006]},{"sample":"KJ28","pop":"Kamboj_Rajasthan","pcs":[-0.0447,0.0632,-0.0016,0.0288,0.0106,-0.0002,0.0006,-0.0019,0.0018,-0.0015]},{"sample":"KJ29","pop":"Kamboj_Rajasthan","pcs":[-0.0435,0.0634,-0.0006,0.0277,0.0147,-0.0005,0.0002,-0.0007,-0.0029,-0.0008]},{"sample":"KJ31","pop":"Kamboj_Rajasthan","pcs":[-0.0437,0.0641,-0.0001,0.0268,0.0074,-0.0,0.0004,-0.0026,0.0016,0.0055]},{"sample":"KJ32","pop":"Kamboj_Rajasthan","pcs":[-0.0433,0.0641,-0.0014,0.0253,0.0019,-0.0,0.0007,-0.0042,0.0026,0.0053]},{"sample":"195","pop":"Kshatriya_UP","pcs":[-0.0381,0.049,0.0012,0.0229,-0.008,0.0,0.0002,-0.0003,0.0019,-0.0036]},{"sample":"198","pop":"Kshatriya_UP","pcs":[-0.0405,0.0524,-0.002,0.0243,0.0009,-0.0005,0.0002,-0.0029,0.0029,0.0019]},{"sample":"199e","pop":"Kshatriya_UP","pcs":[-0.0401,0.0523,-0.0009,0.024,0.0003,-0.0006,0.0006,-0.0025,0.0039,-0.0015]},{"sample":"201","pop":"Kshatriya_UP","pcs":[-0.0403,0.0522,-0.0011,0.0219,0.0087,0.0,-0.0002,-0.0039,-0.0017,0.0029]},{"sample":"204e","pop":"Kshatriya_UP","pcs":[-0.0393,0.0484,-0.0004,0.0227,0.0043,-0.0002,0.0002,-0.0026,-0.0006,0.0034]},{"sample":"208e","pop":"Kshatriya_UP","pcs":[-0.0397,0.0533,0.0003,0.0251,-0.0067,-0.0001,0.0003,-0.0,0.0026,-0.0032]},{"sample":"209e","pop":"Kshatriya_UP","pcs":[-0.0406,0.0534,-0.0003,0.025,0.0011,-0.0,0.0003,-0.0025,0.0041,-0.0003]},{"sample":"G-60","pop":"Pakistan_Gujjar","pcs":[-0.0441,0.0612,0.001,0.0287,0.0064,0.0001,0.0001,0.0019,0.0007,-0.0013]},{"sample":"G-72","pop":"Pakistan_Gujjar","pcs":[-0.0434,0.0616,0.0022,0.0254,0.0202,-0.0,0.0005,-0.0025,0.0031,-0.0019]},{"sample":"G-81","pop":"Pakistan_Gujjar","pcs":[-0.0426,0.0623,-0.001,0.0287,0.0026,0.0001,-0.0001,-0.0002,0.0042,-0.0069]},{"sample":"G-82","pop":"Pakistan_Gujjar","pcs":[-0.0426,0.0606,-0.0017,0.0274,-0.005,-0.0,-0.0,-0.0027,0.0013,0.0012]},{"sample":"G-83","pop":"Pakistan_Gujjar","pcs":[-0.0436,0.0592,0.001,0.0267,-0.0055,0.0002,0.0001,-0.0039,-0.0051,-0.0001]},{"sample":"G-84","pop":"Pakistan_Gujjar","pcs":[-0.0418,0.0628,-0.0014,0.0282,-0.0136,-0.0,0.0008,0.0008,0.004,0.0005]},{"sample":"G-89","pop":"Pakistan_Gujjar","pcs":[-0.0436,0.0617,0.0006,0.0294,-0.0007,0.0001,0.0003,0.0026,0.0015,-0.0012]},{"sample":"G-113","pop":"Pakistan_Gujjar","pcs":[-0.0428,0.0618,-0.0,0.0284,-0.002,0.0005,0.0003,0.0007,0.0019,-0.0036]},{"sample":"G-117","pop":"Pakistan_Gujjar","pcs":[-0.0436,0.061,0.0003,0.03,0.0055,0.0001,0.0004,-0.0006,0.0019,-0.0053]},{"sample":"G-140","pop":"Pakistan_Gujjar","pcs":[-0.0432,0.0613,0.0009,0.0276,-0.0126,-0.0002,0.0002,-0.0004,0.0019,-0.0006]},{"sample":"G-157","pop":"Pakistan_Gujjar","pcs":[-0.0433,0.0608,-0.0015,0.0273,-0.0116,-0.0,0.0004,-0.0017,-0.0002,0.0043]},{"sample":"G-168","pop":"Pakistan_Gujjar","pcs":[-0.0438,0.062,-0.001,0.0245,-0.0103,-0.0002,0.0002,-0.0011,0.0029,0.001]},{"sample":"G-182","pop":"Pakistan_Gujjar","pcs":[-0.0431,0.0623,0.0012,0.0257,-0.0039,0.0001,0.0008,-0.0041,-0.003,-0.002]},{"sample":"G-185","pop":"Pakistan_Gujjar","pcs":[-0.0439,0.0613,0.0019,0.0261,-0.0023,-0.0005,-0.0,0.0002,0.0022,-0.0051]},{"sample":"G15","pop":"Pakistan_Gujjar","pcs":[-0.0433,0.0608,0.0016,0.0266,-0.0016,-0.0,0.0,-0.0001,0.0007,0.0003]},{"sample":"G17","pop":"Pakistan_Gujjar","pcs":[-0.0431,0.059,0.0005,0.029,0.0131,0.0,0.0001,-0.0021,0.0007,0.0014]},{"sample":"Ror_37","pop":"Ror_Haryana","pcs":[-0.0454,0.0667,0.0015,0.0283,0.0111,-0.0004,0.0005,-0.0038,-0.0036,0.0004]},{"sample":"Ror_10","pop":"Ror_Haryana","pcs":[-0.0429,0.0638,0.001,0.0305,-0.0036,-0.0001,0.0006,-0.0032,-0.0006,-0.0013]},{"sample":"Ror_11","pop":"Ror_Haryana","pcs":[-0.0439,0.0661,-0.002,0.0267,0.012,0.0004,-0.0002,0.0008,-0.0018,-0.0013]},{"sample":"Ror_12","pop":"Ror_Haryana","pcs":[-0.044,0.0651,-0.0024,0.0273,-0.0044,0.0002,-0.0001,-0.0019,-0.0044,-0.0044]},{"sample":"Ror_17","pop":"Ror_Haryana","pcs":[-0.0447,0.066,-0.0003,0.0265,0.0157,-0.0004,0.0002,-0.0029,0.0003,-0.0032]},{"sample":"Ror_20","pop":"Ror_Haryana","pcs":[-0.0421,0.0647,0.0018,0.0287,-0.0025,0.0,0.0002,-0.0007,0.0007,0.0017]},{"sample":"Ror_25","pop":"Ror_Haryana","pcs":[-0.0436,0.065,-0.0,0.028,-0.0028,0.0002,0.0001,-0.0007,-0.0019,-0.0037]},{"sample":"Ror_29","pop":"Ror_Haryana","pcs":[-0.0422,0.065,-0.0001,0.0285,0.0088,-0.0,0.0001,-0.0039,0.0005,-0.0024]},{"sample":"Ror_44","pop":"Ror_Haryana","pcs":[-0.0438,0.0623,0.0004,0.029,-0.0068,0.0001,-0.0,-0.0027,0.0004,-0.0041]},{"sample":"Ror_45","pop":"Ror_Haryana","pcs":[-0.0438,0.0643,-0.0003,0.0263,0.0045,0.0001,0.0004,-0.0003,-0.0009,-0.0077]},{"sample":"Ror_49","pop":"Ror_Haryana","pcs":[-0.0437,0.0655,0.0,0.028,0.0029,-0.0003,0.0003,-0.001,0.0004,0.0041]},{"sample":"Ror_52","pop":"Ror_Haryana","pcs":[-0.0423,0.0632,-0.0007,0.0267,0.0136,-0.0004,0.0008,-0.0028,-0.0015,0.0048]},{"sample":"Ror_55","pop":"Ror_Haryana","pcs":[-0.0449,0.0654,0.0012,0.0278,-0.0012,-0.0003,-0.0001,-0.0012,0.0032,-0.0026]},{"sample":"Ror_56","pop":"Ror_Haryana","pcs":[-0.0402,0.0592,0.0002,0.0235,0.0041,0.0004,0.0004,-0.0019,-0.001,0.0015]},{"sample":"Ror_83","pop":"Ror_Haryana","pcs":[-0.0443,0.0663,0.0015,0.028,0.0048,0.0004,-0.0002,-0.0026,-0.0014,-0.0031]}],"pairs":[{"key":"1:2","label":"PC1 vs PC2","pcx":1,"pcy":2},{"key":"1:3","label":"PC1 vs PC3","pcx":1,"pcy":3},{"key":"1:4","label":"PC1 vs PC4","pcx":1,"pcy":4},{"key":"1:5","label":"PC1 vs PC5","pcx":1,"pcy":5},{"key":"1:6","label":"PC1 vs PC6","pcx":1,"pcy":6},{"key":"1:7","label":"PC1 vs PC7","pcx":1,"pcy":7},{"key":"1:8","label":"PC1 vs PC8","pcx":1,"pcy":8},{"key":"1:9","label":"PC1 vs PC9","pcx":1,"pcy":9},{"key":"1:10","label":"PC1 vs PC10","pcx":1,"pcy":10},{"key":"2:3","label":"PC2 vs PC3","pcx":2,"pcy":3},{"key":"2:4","label":"PC2 vs PC4","pcx":2,"pcy":4},{"key":"2:5","label":"PC2 vs PC5","pcx":2,"pcy":5},{"key":"2:6","label":"PC2 vs PC6","pcx":2,"pcy":6},{"key":"2:7","label":"PC2 vs PC7","pcx":2,"pcy":7},{"key":"2:8","label":"PC2 vs PC8","pcx":2,"pcy":8},{"key":"2:9","label":"PC2 vs PC9","pcx":2,"pcy":9},{"key":"2:10","label":"PC2 vs PC10","pcx":2,"pcy":10},{"key":"3:4","label":"PC3 vs PC4","pcx":3,"pcy":4},{"key":"3:5","label":"PC3 vs PC5","pcx":3,"pcy":5},{"key":"3:6","label":"PC3 vs PC6","pcx":3,"pcy":6},{"key":"3:7","label":"PC3 vs PC7","pcx":3,"pcy":7},{"key":"3:8","label":"PC3 vs PC8","pcx":3,"pcy":8},{"key":"3:9","label":"PC3 vs PC9","pcx":3,"pcy":9},{"key":"3:10","label":"PC3 vs PC10","pcx":3,"pcy":10},{"key":"4:5","label":"PC4 vs PC5","pcx":4,"pcy":5},{"key":"4:6","label":"PC4 vs PC6","pcx":4,"pcy":6},{"key":"4:7","label":"PC4 vs PC7","pcx":4,"pcy":7},{"key":"4:8","label":"PC4 vs PC8","pcx":4,"pcy":8},{"key":"4:9","label":"PC4 vs PC9","pcx":4,"pcy":9},{"key":"4:10","label":"PC4 vs PC10","pcx":4,"pcy":10},{"key":"5:6","label":"PC5 vs PC6","pcx":5,"pcy":6},{"key":"5:7","label":"PC5 vs PC7","pcx":5,"pcy":7},{"key":"5:8","label":"PC5 vs PC8","pcx":5,"pcy":8},{"key":"5:9","label":"PC5 vs PC9","pcx":5,"pcy":9},{"key":"5:10","label":"PC5 vs PC10","pcx":5,"pcy":10},{"key":"6:7","label":"PC6 vs PC7","pcx":6,"pcy":7},{"key":"6:8","label":"PC6 vs PC8","pcx":6,"pcy":8},{"key":"6:9","label":"PC6 vs PC9","pcx":6,"pcy":9},{"key":"6:10","label":"PC6 vs PC10","pcx":6,"pcy":10},{"key":"7:8","label":"PC7 vs PC8","pcx":7,"pcy":8},{"key":"7:9","label":"PC7 vs PC9","pcx":7,"pcy":9},{"key":"7:10","label":"PC7 vs PC10","pcx":7,"pcy":10},{"key":"8:9","label":"PC8 vs PC9","pcx":8,"pcy":9},{"key":"8:10","label":"PC8 vs PC10","pcx":8,"pcy":10},{"key":"9:10","label":"PC9 vs PC10","pcx":9,"pcy":10}],"limits":{"1:2":{"x":[-0.081262,0.128962],"y":[-0.04528,0.17088]},"1:3":{"x":[-0.081262,0.128962],"y":[-0.556368,0.572368]},"1:4":{"x":[-0.081262,0.128962],"y":[-0.507146,0.096646]},"1:5":{"x":[-0.081262,0.128962],"y":[-0.189522,0.34662200000000004]},"1:6":{"x":[-0.081262,0.128962],"y":[-0.201384,0.746584]},"1:7":{"x":[-0.081262,0.128962],"y":[-0.043564,0.678164]},"1:8":{"x":[-0.081262,0.128962],"y":[-0.718476,0.692276]},"1:9":{"x":[-0.081262,0.128962],"y":[-0.583668,0.444268]},"1:10":{"x":[-0.081262,0.128962],"y":[-0.607234,0.623534]},"2:3":{"x":[-0.04528,0.17088],"y":[-0.556368,0.572368]},"2:4":{"x":[-0.04528,0.17088],"y":[-0.507146,0.096646]},"2:5":{"x":[-0.04528,0.17088],"y":[-0.189522,0.34662200000000004]},"2:6":{"x":[-0.04528,0.17088],"y":[-0.201384,0.746584]},"2:7":{"x":[-0.04528,0.17088],"y":[-0.043564,0.678164]},"2:8":{"x":[-0.04528,0.17088],"y":[-0.718476,0.692276]},"2:9":{"x":[-0.04528,0.17088],"y":[-0.583668,0.444268]},"2:10":{"x":[-0.04528,0.17088],"y":[-0.607234,0.623534]},"3:4":{"x":[-0.556368,0.572368],"y":[-0.507146,0.096646]},"3:5":{"x":[-0.556368,0.572368],"y":[-0.189522,0.34662200000000004]},"3:6":{"x":[-0.556368,0.572368],"y":[-0.201384,0.746584]},"3:7":{"x":[-0.556368,0.572368],"y":[-0.043564,0.678164]},"3:8":{"x":[-0.556368,0.572368],"y":[-0.718476,0.692276]},"3:9":{"x":[-0.556368,0.572368],"y":[-0.583668,0.444268]},"3:10":{"x":[-0.556368,0.572368],"y":[-0.607234,0.623534]},"4:5":{"x":[-0.507146,0.096646],"y":[-0.189522,0.34662200000000004]},"4:6":{"x":[-0.507146,0.096646],"y":[-0.201384,0.746584]},"4:7":{"x":[-0.507146,0.096646],"y":[-0.043564,0.678164]},"4:8":{"x":[-0.507146,0.096646],"y":[-0.718476,0.692276]},"4:9":{"x":[-0.507146,0.096646],"y":[-0.583668,0.444268]},"4:10":{"x":[-0.507146,0.096646],"y":[-0.607234,0.623534]},"5:6":{"x":[-0.189522,0.34662200000000004],"y":[-0.201384,0.746584]},"5:7":{"x":[-0.189522,0.34662200000000004],"y":[-0.043564,0.678164]},"5:8":{"x":[-0.189522,0.34662200000000004],"y":[-0.718476,0.692276]},"5:9":{"x":[-0.189522,0.34662200000000004],"y":[-0.583668,0.444268]},"5:10":{"x":[-0.189522,0.34662200000000004],"y":[-0.607234,0.623534]},"6:7":{"x":[-0.201384,0.746584],"y":[-0.043564,0.678164]},"6:8":{"x":[-0.201384,0.746584],"y":[-0.718476,0.692276]},"6:9":{"x":[-0.201384,0.746584],"y":[-0.583668,0.444268]},"6:10":{"x":[-0.201384,0.746584],"y":[-0.607234,0.623534]},"7:8":{"x":[-0.043564,0.678164],"y":[-0.718476,0.692276]},"7:9":{"x":[-0.043564,0.678164],"y":[-0.583668,0.444268]},"7:10":{"x":[-0.043564,0.678164],"y":[-0.607234,0.623534]},"8:9":{"x":[-0.718476,0.692276],"y":[-0.583668,0.444268]},"8:10":{"x":[-0.718476,0.692276],"y":[-0.607234,0.623534]},"9:10":{"x":[-0.583668,0.444268],"y":[-0.607234,0.623534]}},"startPair":"1:2","pointSize":3.8,"alpha":0.84,"fitMode":"plot","numPcs":10}</script>
+  <script src="smartpca_plot.js"></script>
+</body>
+</html>
